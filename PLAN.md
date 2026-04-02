@@ -66,7 +66,7 @@
 - [x] 接入 JaCoCo 覆盖率报告任务，并在 README 中补充当前已验证的兼容范围与限制说明。
 - [x] 为 `TabooLibBackend`、`taboolibIocDoctor`、`verifyTaboolibIoc` 与核心错误分支补齐测试，提升核心路径覆盖率并验证诊断行为。
 - [ ] 继续补足剩余插件路径覆盖率，达到可启用覆盖率门槛的水平。
-- [ ] 评估并落地真实 `io.izzel.taboolib` 版本矩阵验证或 CI 校验方案。
+- [x] 评估并落地真实 `io.izzel.taboolib` CI 校验方案，固定当前已验证的 Windows + Java 17 根工程与 example 联调构建流程。
 
 方案：先补纯逻辑单元测试与覆盖率报告，再根据报告结果决定是否引入硬性覆盖率门槛，避免在覆盖率明显不足时把构建流程直接卡死。
 
