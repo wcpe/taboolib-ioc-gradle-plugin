@@ -104,6 +104,12 @@ taboolibIoc {
 
 - `taboolibIocDoctor`：输出当前后端、依赖来源、目标包来源、是否已完成接管。
 - `verifyTaboolibIoc`：在 `jar`、`assemble`、`build` 前验证自动接管是否已经生效。
+- `analyzeTaboolibIocBeans`：扫描 `main` 编译产物，建立 Bean 索引与注入点索引，并输出静态诊断报告到 `build/reports/taboolib-ioc/static-diagnosis.json`。
+
+当前静态诊断已支持：
+
+- `error`：缺失 Bean、名称 Bean 不存在、名称 Bean 类型不兼容、多个 `@Primary`。
+- `warning`：多个候选且未限定、条件 Bean 才能满足依赖、依赖只能靠运行时手动 Bean 补足、`@ComponentScan` 可能排除某候选。
 
 ## 兼容性说明
 
@@ -151,6 +157,9 @@ taboolibIoc {
 
 ```powershell
 .\gradlew.bat -p example :consumer:build
+.\gradlew.bat -p example :consumer:analyzeTaboolibIocBeans
 ```
 
 构建成功后，可检查 `example/consumer/build/libs` 下的 jar，确认其中已经出现 `com/example/demo/ioc/...`，且不再保留原始的 `top/wcpe/taboolib/ioc/...` 路径。
+
+执行 `analyzeTaboolibIocBeans` 后，可打开 `example/consumer/build/reports/taboolib-ioc/static-diagnosis.json` 查看 example 中所有静态诊断触发样例。

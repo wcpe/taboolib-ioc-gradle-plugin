@@ -4,6 +4,9 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.tasks.TaskProvider
+import org.gradle.api.tasks.SourceSet
+import org.gradle.api.tasks.SourceSetContainer
+import top.wcpe.taboolib.ioc.gradle.analysis.AnalyzeTaboolibIocBeansTask
 import top.wcpe.taboolib.ioc.gradle.backend.BackendConfigurationResult
 import top.wcpe.taboolib.ioc.gradle.backend.PackagingBackend
 import top.wcpe.taboolib.ioc.gradle.backend.PackagingBackendId
@@ -18,6 +21,7 @@ class TaboolibIocPlugin : Plugin<Project> {
         applyConventions(project, extension)
 
         val resolver = TaboolibIocResolver(project, extension)
+        registerAnalysisTask(project)
         val doctorTask = registerDoctorTask(project)
         val verifyTask = registerVerifyTask(project)
         registerDependencyHooks(project, extension, resolver)
@@ -117,6 +121,24 @@ class TaboolibIocPlugin : Plugin<Project> {
             task.group = "taboolib ioc"
             task.description = "Verifies that Taboolib IoC auto takeover is configured before packaging tasks run."
         }
+    }
+
+    private fun registerAnalysisTask(project: Project): TaskProvider<AnalyzeTaboolibIocBeansTask> {
+        val taskProvider = project.tasks.register("analyzeTaboolibIocBeans", AnalyzeTaboolibIocBeansTask::class.java) { task ->
+            task.group = "taboolib ioc"
+            task.description = "Builds bean and injection indexes from compiled classes and writes a static diagnosis report."
+            task.reportFile.convention(project.layout.buildDirectory.file("reports/taboolib-ioc/static-diagnosis.json"))
+        }
+
+        project.pluginManager.withPlugin("java-base") {
+            val sourceSets = project.extensions.findByType(SourceSetContainer::class.java) ?: return@withPlugin
+            val mainSourceSet = sourceSets.findByName(SourceSet.MAIN_SOURCE_SET_NAME) ?: return@withPlugin
+            taskProvider.configure { task ->
+                task.classDirectories.from(mainSourceSet.output.classesDirs)
+                task.dependsOn(project.tasks.named(mainSourceSet.classesTaskName))
+            }
+        }
+        return taskProvider
     }
 
     private fun registerDependencyHooks(

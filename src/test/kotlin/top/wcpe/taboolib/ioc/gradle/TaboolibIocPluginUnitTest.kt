@@ -21,6 +21,7 @@ class TaboolibIocPluginUnitTest {
         project.pluginManager.apply(TaboolibIocPlugin::class.java)
 
         assertNotNull(project.extensions.findByName("taboolibIoc"))
+        assertNotNull(project.tasks.findByName("analyzeTaboolibIocBeans"))
         assertNotNull(project.tasks.findByName("taboolibIocDoctor"))
         assertNotNull(project.tasks.findByName("verifyTaboolibIoc"))
     }

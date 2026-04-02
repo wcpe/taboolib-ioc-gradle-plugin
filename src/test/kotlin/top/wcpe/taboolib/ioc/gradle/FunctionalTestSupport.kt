@@ -4,6 +4,7 @@ import java.nio.file.Path
 import java.util.jar.JarFile
 import kotlin.io.path.createDirectories
 import kotlin.io.path.listDirectoryEntries
+import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
@@ -11,6 +12,7 @@ import org.gradle.testkit.runner.GradleRunner
 internal data class FixtureOptions(
     val applyMockTaboolib: Boolean = true,
     val includeIocLibrary: Boolean = true,
+    val includeStaticDiagnosisSamples: Boolean = false,
     val explicitTargetPackage: String? = null,
     val rootGroup: String? = "com.example.root",
     val consumerGroup: String? = null,
@@ -61,6 +63,10 @@ internal class FunctionalTestProject(private val rootDir: Path) {
         }
     }
 
+    fun readRelativeFile(relativePath: String): String {
+        return rootDir.resolve(relativePath).readText()
+    }
+
     private fun writeConsumerProject(options: FixtureOptions) {
         writeFile(rootDir.resolve("consumer/build.gradle"), consumerBuildScript(options))
         writeFile(
@@ -71,6 +77,9 @@ internal class FunctionalTestProject(private val rootDir: Path) {
                 body = "public String value() { return \"ok\"; }",
             ),
         )
+        if (options.includeStaticDiagnosisSamples) {
+            StaticDiagnosisFixtureSources.writeJavaSources(rootDir.resolve("consumer/src/main/java"))
+        }
     }
 
     private fun writeIocLibraryProject() {

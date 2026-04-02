@@ -71,3 +71,17 @@
 方案：先补纯逻辑单元测试与覆盖率报告，再在覆盖率达标后引入硬性覆盖率门槛并纳入 `build/check`，避免在覆盖率明显不足时把构建流程直接卡死。
 
 完成标准：核心逻辑具备稳定单元测试覆盖，覆盖率报告可持续产出且已纳入 `build/check` 的硬性质量门，兼容范围说明清晰，后续发布与 CI 扩展边界明确。
+
+## 阶段 6：源码 Bean 静态诊断
+
+目标：在不依赖运行时容器启动的前提下，为 consumer 工程提供可直接落地的 Bean/注入点索引与静态诊断能力，提前暴露 IoC 配置风险。
+
+任务：
+- [x] 建立 Bean 索引，识别类级 `@Bean`、`@Configuration`、`@Bean` 工厂方法，以及 `beanName`、`@Primary`、`@Order`、条件注解。
+- [x] 建立注入点索引，识别构造器参数、字段、方法参数，以及 `@Named`、`@Resource`、`required = false`。
+- [x] 新增 `analyzeTaboolibIocBeans` 任务，支持缺失 Bean、名称 Bean 不存在、名称 Bean 类型不兼容、多个 `@Primary`、多个候选且未限定、条件 Bean 才能满足依赖、依赖只能靠运行时手动 Bean 补足、`@ComponentScan` 可能排除某候选。
+- [x] 为功能测试夹具与 `example/consumer` 补齐全部规则触发样例，并验证报告输出与示例构建。
+
+方案：基于 `main` 编译产物做字节码扫描，先建立 Bean、注入点、`@ComponentScan` 与类型继承索引，再在 Gradle 任务中输出结构化 JSON 诊断报告，避免把分析能力绑死在运行时容器实现上。
+
+完成标准：`analyzeTaboolibIocBeans` 可稳定产出结构化静态诊断报告，example 中保留全部可触发规则的最小样例，根工程测试与 example 构建验证通过。

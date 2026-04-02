@@ -25,6 +25,7 @@ class TaboolibIocPluginFunctionalTest {
         )
 
         val result = project.build(":consumer:tasks", "--all")
+        assertContains(result.output, "analyzeTaboolibIocBeans")
         assertContains(result.output, "taboolibIocDoctor")
         assertContains(result.output, "verifyTaboolibIoc")
     }
@@ -161,5 +162,36 @@ class TaboolibIocPluginFunctionalTest {
         val entries = project.consumerJarEntries()
         assertFalse(entries.contains("top/wcpe/taboolib/ioc/SampleService.class"))
         assertFalse(entries.contains("com/example/root/ioc/SampleService.class"))
+    }
+
+    @Test
+    fun analyzeTaskWritesRequestedStaticDiagnosisReport() {
+        val project = FunctionalTestProject(tempDir.resolve("static-diagnosis")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                includeStaticDiagnosisSamples = true,
+            ),
+        )
+
+        val result = project.build(":consumer:analyzeTaboolibIocBeans")
+        val report = project.readRelativeFile("consumer/build/reports/taboolib-ioc/static-diagnosis.json")
+
+        assertContains(result.output, "[analyzeTaboolibIocBeans]")
+        assertContains(report, "beanIndex")
+        assertContains(report, "injectionPointIndex")
+        assertContains(report, "constructor_parameter")
+        assertContains(report, "field")
+        assertContains(report, "method_parameter")
+        assertContains(report, "missing-bean")
+        assertContains(report, "named-bean-not-found")
+        assertContains(report, "named-bean-type-mismatch")
+        assertContains(report, "multiple-primary-beans")
+        assertContains(report, "multiple-candidates-unqualified")
+        assertContains(report, "conditional-bean-only")
+        assertContains(report, "runtime-manual-bean-only")
+        assertContains(report, "component-scan-may-exclude")
     }
 }
