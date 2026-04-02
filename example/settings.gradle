@@ -1,0 +1,24 @@
+pluginManagement {
+    includeBuild('..')
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+        maven {
+            url = uri('https://repo.tabooproject.org/repository/releases/')
+        }
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        mavenLocal()
+        mavenCentral()
+        maven {
+            url = uri('https://repo.tabooproject.org/repository/releases/')
+        }
+    }
+}
+
+rootProject.name = 'taboolib-ioc-example'
+include 'consumer', 'ioc-lib'
