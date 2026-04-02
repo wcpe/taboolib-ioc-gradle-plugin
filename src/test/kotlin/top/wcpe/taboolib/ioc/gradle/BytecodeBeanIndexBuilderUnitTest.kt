@@ -24,6 +24,11 @@ class BytecodeBeanIndexBuilderUnitTest {
         assertTrue(index.beanIndex.any { it.beanName == "greetingPrimaryOne" && it.primary })
         assertTrue(index.beanIndex.any { it.beanName == "staticDiagnosisConfiguration" && it.kind == BeanKind.CLASS })
         assertTrue(
+            index.beanIndex.any {
+                it.beanName == "stringMessageBox" && it.exposedGenericType == "fixture.included.scan.MessageBox<java.lang.String>"
+            },
+        )
+        assertTrue(
             index.injectionPointIndex.any {
                 it.kind == InjectionPointKind.CONSTRUCTOR_PARAMETER && it.dependencyType == "fixture.included.scan.MissingService"
             },
@@ -36,6 +41,18 @@ class BytecodeBeanIndexBuilderUnitTest {
         assertTrue(
             index.injectionPointIndex.any {
                 it.kind == InjectionPointKind.METHOD_PARAMETER && it.declarationName == "setSingleMethodService"
+            },
+        )
+        assertTrue(
+            index.injectionPointIndex.any {
+                it.declarationName == "constructor[0]" &&
+                    it.dependencyGenericType == "fixture.included.scan.MessageBox<java.lang.String>"
+            },
+        )
+        assertTrue(
+            index.classIndex.any { entry ->
+                entry.className == "fixture.included.scan.StringMessageBox" &&
+                    entry.genericSuperTypes.contains("fixture.included.scan.MessageBox<java.lang.String>")
             },
         )
         assertEquals(listOf("fixture.included.scan"), index.componentScans.single().basePackages)

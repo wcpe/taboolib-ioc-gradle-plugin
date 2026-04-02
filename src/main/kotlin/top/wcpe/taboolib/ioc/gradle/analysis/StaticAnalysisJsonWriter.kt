@@ -23,12 +23,19 @@ internal object StaticAnalysisJsonWriter {
                     "declarationName" to bean.declarationName,
                     "beanName" to bean.beanName,
                     "exposedType" to bean.exposedType,
+                    "exposedGenericType" to bean.exposedGenericType,
                     "packageName" to bean.packageName,
                     "sourceFile" to bean.sourceFile,
                     "kind" to bean.kind.name.lowercase(),
                     "primary" to bean.primary,
                     "order" to bean.order,
                     "conditionalAnnotations" to bean.conditionalAnnotations,
+                    "conditions" to bean.conditions.map { condition ->
+                        linkedMapOf(
+                            "annotationName" to condition.annotationName,
+                            "attributes" to condition.attributes,
+                        )
+                    },
                 )
             },
             "injectionPointIndex" to injectionPointIndex.map { injection ->
@@ -36,9 +43,11 @@ internal object StaticAnalysisJsonWriter {
                     "ownerClassName" to injection.ownerClassName,
                     "declarationName" to injection.declarationName,
                     "dependencyType" to injection.dependencyType,
+                    "dependencyGenericType" to injection.dependencyGenericType,
                     "ownerPackage" to injection.ownerPackage,
                     "sourceFile" to injection.sourceFile,
                     "kind" to injection.kind.name.lowercase(),
+                    "parameterIndex" to injection.parameterIndex,
                     "qualifierName" to injection.qualifierName,
                     "required" to injection.required,
                 )
@@ -49,6 +58,14 @@ internal object StaticAnalysisJsonWriter {
                     "packageName" to scan.packageName,
                     "sourceFile" to scan.sourceFile,
                     "basePackages" to scan.basePackages,
+                )
+            },
+            "typeAliasIndex" to typeAliasIndex.map { typeAlias ->
+                linkedMapOf(
+                    "packageName" to typeAlias.packageName,
+                    "aliasName" to typeAlias.aliasName,
+                    "targetType" to typeAlias.targetType,
+                    "sourceFile" to typeAlias.sourceFile,
                 )
             },
             "diagnostics" to diagnostics.map { diagnostic ->

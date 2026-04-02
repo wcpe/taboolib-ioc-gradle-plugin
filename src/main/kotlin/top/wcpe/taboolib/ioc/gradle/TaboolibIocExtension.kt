@@ -19,6 +19,10 @@ abstract class TaboolibIocExtension @Inject constructor(objects: ObjectFactory) 
 
     val localProjectPath: Property<String> = objects.property(String::class.java)
 
+    val analysisFailOnError: Property<Boolean> = objects.property(Boolean::class.java)
+
+    val analysisFailOnWarning: Property<Boolean> = objects.property(Boolean::class.java)
+
     fun dependency(notation: String) {
         dependencyNotation.set(notation)
     }

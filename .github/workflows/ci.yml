@@ -26,6 +26,9 @@ jobs:
       - name: Build root project
         run: .\gradlew.bat build
 
+      - name: Build quality gate consumer
+        run: .\gradlew.bat -p example :quality-gate-consumer:build
+
       - name: Build example consumer
         run: .\gradlew.bat -p example :consumer:build
 
@@ -38,4 +41,6 @@ jobs:
             build/reports/tests/test
             build/reports/jacoco/test
             example/consumer/build/libs
+            example/consumer/build/reports/taboolib-ioc
+            example/quality-gate-consumer/build/reports/taboolib-ioc
           if-no-files-found: warn

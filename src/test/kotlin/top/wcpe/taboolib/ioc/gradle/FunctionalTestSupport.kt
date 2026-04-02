@@ -13,6 +13,8 @@ internal data class FixtureOptions(
     val applyMockTaboolib: Boolean = true,
     val includeIocLibrary: Boolean = true,
     val includeStaticDiagnosisSamples: Boolean = false,
+    val analysisFailOnError: Boolean? = null,
+    val analysisFailOnWarning: Boolean? = null,
     val explicitTargetPackage: String? = null,
     val rootGroup: String? = "com.example.root",
     val consumerGroup: String? = null,
@@ -176,6 +178,8 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             }
             appendLine("taboolibIoc {")
             appendLine("    autoTakeover = ${options.autoTakeover}")
+            options.analysisFailOnError?.let { appendLine("    analysisFailOnError = $it") }
+            options.analysisFailOnWarning?.let { appendLine("    analysisFailOnWarning = $it") }
             if (options.explicitTargetPackage != null) {
                 appendLine("    targetPackage = '${options.explicitTargetPackage}'")
             }

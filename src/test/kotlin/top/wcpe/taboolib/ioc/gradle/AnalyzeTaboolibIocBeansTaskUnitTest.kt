@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertFailsWith
 import org.gradle.testfixtures.ProjectBuilder
 import org.junit.jupiter.api.io.TempDir
 import top.wcpe.taboolib.ioc.gradle.analysis.AnalyzeTaboolibIocBeansTask
@@ -24,6 +25,10 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         val task = project.tasks.create("analyzeTaboolibIocBeans", AnalyzeTaboolibIocBeansTask::class.java)
         val reportFile = tempDir.resolve("report.json").toFile()
         task.classDirectories.from(classesDir.toFile())
+        task.sourceDirectories.from(tempDir.resolve("compiled/src").toFile())
+        task.failOnError.set(false)
+        task.failOnWarning.set(false)
+        task.projectPropertiesInput.put("feature.enabled", "on")
         task.reportFile.set(reportFile)
 
         task.generateReport()
@@ -39,5 +44,53 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         assertContains(report, "conditional-bean-only")
         assertContains(report, "runtime-manual-bean-only")
         assertContains(report, "component-scan-may-exclude")
+        assertContains(report, "dependencyGenericType")
+        assertContains(report, "conditions")
+    }
+
+    @Test
+    fun failsWhenErrorGateEnabled() {
+        val classesDir = StaticDiagnosisFixtureSources.compileJavaSources(tempDir.resolve("error-gate"))
+        val project = ProjectBuilder.builder()
+            .withName("analysis-error-gate")
+            .withProjectDir(Files.createTempDirectory("analysis-error-gate").toFile())
+            .build()
+
+        val task = project.tasks.create("analyzeTaboolibIocBeans", AnalyzeTaboolibIocBeansTask::class.java)
+        task.classDirectories.from(classesDir.toFile())
+        task.sourceDirectories.from(tempDir.resolve("error-gate/src").toFile())
+        task.failOnError.set(true)
+        task.failOnWarning.set(false)
+        task.projectPropertiesInput.put("feature.enabled", "on")
+        task.reportFile.set(tempDir.resolve("error-gate-report.json").toFile())
+
+        val error = assertFailsWith<Exception> {
+            task.generateReport()
+        }
+
+        assertContains(error.message ?: "", "failOnError=true")
+    }
+
+    @Test
+    fun failsWhenWarningGateEnabled() {
+        val classesDir = StaticDiagnosisFixtureSources.compileJavaSources(tempDir.resolve("warning-gate"))
+        val project = ProjectBuilder.builder()
+            .withName("analysis-warning-gate")
+            .withProjectDir(Files.createTempDirectory("analysis-warning-gate").toFile())
+            .build()
+
+        val task = project.tasks.create("analyzeTaboolibIocBeans", AnalyzeTaboolibIocBeansTask::class.java)
+        task.classDirectories.from(classesDir.toFile())
+        task.sourceDirectories.from(tempDir.resolve("warning-gate/src").toFile())
+        task.failOnError.set(false)
+        task.failOnWarning.set(true)
+        task.projectPropertiesInput.put("feature.enabled", "on")
+        task.reportFile.set(tempDir.resolve("warning-gate-report.json").toFile())
+
+        val error = assertFailsWith<Exception> {
+            task.generateReport()
+        }
+
+        assertContains(error.message ?: "", "failOnWarning=true")
     }
 }

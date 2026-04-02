@@ -2,10 +2,18 @@ package top.wcpe.taboolib.ioc.gradle.analysis
 
 internal object StaticDiagnosisEngine {
 
-    fun analyze(projectPath: String, index: BytecodeAnalysisIndex): StaticAnalysisReport {
+    fun analyze(
+        projectPath: String,
+        index: BytecodeAnalysisIndex,
+        typeAliases: List<TypeAliasDefinition> = emptyList(),
+        projectProperties: Map<String, String> = emptyMap(),
+    ): StaticAnalysisReport {
         val hierarchy = TypeHierarchy(index.classIndex)
+        val beanConditionStates = index.beanIndex.associateWith { bean ->
+            evaluateConditions(bean, index.beanIndex, hierarchy, projectProperties)
+        }
         val diagnostics = index.injectionPointIndex.flatMap { injectionPoint ->
-            analyzeInjectionPoint(injectionPoint, index.beanIndex, index.componentScans, hierarchy)
+            analyzeInjectionPoint(injectionPoint, index.beanIndex, index.componentScans, hierarchy, beanConditionStates)
         }.sortedWith(compareBy({ it.severity.name }, { it.ownerClassName }, { it.declarationName }, { it.rule }))
 
         return StaticAnalysisReport(
@@ -13,6 +21,7 @@ internal object StaticDiagnosisEngine {
             beanIndex = index.beanIndex,
             injectionPointIndex = index.injectionPointIndex,
             componentScans = index.componentScans,
+            typeAliasIndex = typeAliases,
             diagnostics = diagnostics,
         )
     }
@@ -22,11 +31,14 @@ internal object StaticDiagnosisEngine {
         beans: List<BeanDefinition>,
         componentScans: List<ComponentScanDefinition>,
         hierarchy: TypeHierarchy,
+        beanConditionStates: Map<BeanDefinition, ConditionEvaluationState>,
     ): List<StaticDiagnostic> {
-        val assignableCandidates = beans.filter { hierarchy.isAssignable(it.exposedType, injectionPoint.dependencyType) }
+        val assignableCandidates = beans.filter {
+            hierarchy.isAssignable(it.exposedType, injectionPoint.dependencyType) && hierarchy.isGenericMatch(it, injectionPoint)
+        }
         val inScanCandidates = applyComponentScan(assignableCandidates, componentScans)
-        val unconditionalCandidates = inScanCandidates.filter { it.conditionalAnnotations.isEmpty() }
-        val conditionalCandidates = inScanCandidates.filter { it.conditionalAnnotations.isNotEmpty() }
+        val activeCandidates = inScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.ENABLED }
+        val conditionalCandidates = inScanCandidates.filter { beanConditionStates[it] != ConditionEvaluationState.ENABLED }
 
         val qualifierName = injectionPoint.qualifierName
         if (qualifierName != null) {
@@ -42,7 +54,9 @@ internal object StaticDiagnosisEngine {
                 )
             }
 
-            val namedTypedCandidates = namedCandidates.filter { hierarchy.isAssignable(it.exposedType, injectionPoint.dependencyType) }
+            val namedTypedCandidates = namedCandidates.filter {
+                hierarchy.isAssignable(it.exposedType, injectionPoint.dependencyType) && hierarchy.isGenericMatch(it, injectionPoint)
+            }
             if (namedTypedCandidates.isEmpty()) {
                 return listOf(
                     diagnostic(
@@ -68,14 +82,14 @@ internal object StaticDiagnosisEngine {
                 )
             }
 
-            val namedUnconditionalCandidates = namedInScanCandidates.filter { it.conditionalAnnotations.isEmpty() }
-            if (namedUnconditionalCandidates.isEmpty()) {
+            val namedActiveCandidates = namedInScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.ENABLED }
+            if (namedActiveCandidates.isEmpty()) {
                 return listOf(
                     diagnostic(
                         severity = DiagnosticSeverity.WARNING,
                         rule = "conditional-bean-only",
                         injectionPoint = injectionPoint,
-                        message = "限定名称 '$qualifierName' 的依赖当前只能由条件 Bean 满足。",
+                        message = "限定名称 '$qualifierName' 的依赖当前只能由条件 Bean 满足，且条件未全部静态确认。",
                         candidateBeans = namedInScanCandidates.map { it.beanName },
                     ),
                 )
@@ -84,14 +98,14 @@ internal object StaticDiagnosisEngine {
             return emptyList()
         }
 
-        if (unconditionalCandidates.isEmpty()) {
+        if (activeCandidates.isEmpty()) {
             return when {
                 conditionalCandidates.isNotEmpty() -> listOf(
                     diagnostic(
                         severity = DiagnosticSeverity.WARNING,
                         rule = "conditional-bean-only",
                         injectionPoint = injectionPoint,
-                        message = "依赖 ${injectionPoint.dependencyType} 当前只能由条件 Bean 满足。",
+                        message = "依赖 ${injectionPoint.dependencyType} 当前只能由条件 Bean 满足，且条件未全部静态确认。",
                         candidateBeans = conditionalCandidates.map { it.beanName },
                     ),
                 )
@@ -126,7 +140,7 @@ internal object StaticDiagnosisEngine {
             }
         }
 
-        val primaryCandidates = unconditionalCandidates.filter { it.primary }
+        val primaryCandidates = activeCandidates.filter { it.primary }
         if (primaryCandidates.size > 1) {
             return listOf(
                 diagnostic(
@@ -139,14 +153,14 @@ internal object StaticDiagnosisEngine {
             )
         }
 
-        if (unconditionalCandidates.size > 1 && primaryCandidates.isEmpty()) {
+        if (activeCandidates.size > 1 && primaryCandidates.isEmpty()) {
             return listOf(
                 diagnostic(
                     severity = DiagnosticSeverity.WARNING,
                     rule = "multiple-candidates-unqualified",
                     injectionPoint = injectionPoint,
                     message = "依赖 ${injectionPoint.dependencyType} 存在多个候选 Bean，但当前注入点未限定名称。",
-                    candidateBeans = unconditionalCandidates.map { it.beanName },
+                    candidateBeans = activeCandidates.map { it.beanName },
                 ),
             )
         }
@@ -188,9 +202,127 @@ internal object StaticDiagnosisEngine {
         )
     }
 
+    private fun evaluateConditions(
+        bean: BeanDefinition,
+        beans: List<BeanDefinition>,
+        hierarchy: TypeHierarchy,
+        projectProperties: Map<String, String>,
+    ): ConditionEvaluationState {
+        if (bean.conditions.isEmpty()) {
+            return ConditionEvaluationState.ENABLED
+        }
+        var unknown = false
+        bean.conditions.forEach { condition ->
+            when (evaluateCondition(condition, beans, hierarchy, projectProperties)) {
+                ConditionEvaluationState.DISABLED -> return ConditionEvaluationState.DISABLED
+                ConditionEvaluationState.UNKNOWN -> unknown = true
+                ConditionEvaluationState.ENABLED -> Unit
+            }
+        }
+        return if (unknown) ConditionEvaluationState.UNKNOWN else ConditionEvaluationState.ENABLED
+    }
+
+    private fun evaluateCondition(
+        condition: ConditionDescriptor,
+        beans: List<BeanDefinition>,
+        hierarchy: TypeHierarchy,
+        projectProperties: Map<String, String>,
+    ): ConditionEvaluationState {
+        return when (condition.annotationName) {
+            "ConditionalOnProperty" -> evaluateConditionalOnProperty(condition, projectProperties)
+            "ConditionalOnClass" -> evaluateConditionalOnClass(condition, hierarchy, negate = false)
+            "ConditionalOnMissingClass" -> evaluateConditionalOnClass(condition, hierarchy, negate = true)
+            "ConditionalOnBean" -> evaluateConditionalOnBean(condition, beans, hierarchy, negate = false)
+            "ConditionalOnMissingBean" -> evaluateConditionalOnBean(condition, beans, hierarchy, negate = true)
+            else -> ConditionEvaluationState.UNKNOWN
+        }
+    }
+
+    private fun evaluateConditionalOnProperty(
+        condition: ConditionDescriptor,
+        projectProperties: Map<String, String>,
+    ): ConditionEvaluationState {
+        val propertyNames = attributeValues(condition.attributes, "name", "value")
+        if (propertyNames.isEmpty()) {
+            return ConditionEvaluationState.UNKNOWN
+        }
+        val havingValue = (condition.attributes["havingValue"] as? String)?.trim().orEmpty()
+        val matchIfMissing = condition.attributes["matchIfMissing"] as? Boolean ?: false
+        val satisfied = propertyNames.all { propertyName ->
+            val propertyValue = projectProperties[propertyName]?.trim()
+            when {
+                propertyValue == null -> matchIfMissing
+                havingValue.isNotEmpty() -> propertyValue == havingValue
+                else -> !propertyValue.equals("false", ignoreCase = true)
+            }
+        }
+        return if (satisfied) ConditionEvaluationState.ENABLED else ConditionEvaluationState.DISABLED
+    }
+
+    private fun evaluateConditionalOnClass(
+        condition: ConditionDescriptor,
+        hierarchy: TypeHierarchy,
+        negate: Boolean,
+    ): ConditionEvaluationState {
+        val classNames = attributeValues(condition.attributes, "name", "value", "type")
+        if (classNames.isEmpty()) {
+            return ConditionEvaluationState.UNKNOWN
+        }
+        val present = classNames.all { hierarchy.hasClass(it) }
+        return when {
+            negate && !present -> ConditionEvaluationState.ENABLED
+            negate && present -> ConditionEvaluationState.DISABLED
+            !negate && present -> ConditionEvaluationState.ENABLED
+            else -> ConditionEvaluationState.DISABLED
+        }
+    }
+
+    private fun evaluateConditionalOnBean(
+        condition: ConditionDescriptor,
+        beans: List<BeanDefinition>,
+        hierarchy: TypeHierarchy,
+        negate: Boolean,
+    ): ConditionEvaluationState {
+        val beanNames = attributeValues(condition.attributes, "name", "beanName")
+        val beanTypes = attributeValues(condition.attributes, "type", "value")
+        if (beanNames.isEmpty() && beanTypes.isEmpty()) {
+            return ConditionEvaluationState.UNKNOWN
+        }
+        val namesMatch = beanNames.all { expectedName -> beans.any { it.beanName == expectedName } }
+        val typesMatch = beanTypes.all { expectedType ->
+            beans.any { hierarchy.isAssignable(it.exposedType, expectedType) }
+        }
+        val matched = namesMatch && typesMatch
+        return when {
+            negate && !matched -> ConditionEvaluationState.ENABLED
+            negate && matched -> ConditionEvaluationState.DISABLED
+            !negate && matched -> ConditionEvaluationState.ENABLED
+            else -> ConditionEvaluationState.DISABLED
+        }
+    }
+
+    private fun attributeValues(attributes: Map<String, Any>, vararg keys: String): List<String> {
+        return keys.asSequence()
+            .mapNotNull { attributes[it] }
+            .flatMap { value ->
+                when (value) {
+                    is String -> sequenceOf(value)
+                    is Iterable<*> -> value.asSequence().filterIsInstance<String>()
+                    else -> emptySequence()
+                }
+            }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .toList()
+    }
+
     private class TypeHierarchy(classEntries: List<ClassIndexEntry>) {
 
         private val index = classEntries.associateBy { it.className }
+        private val genericSuperTypeIndex = classEntries.associate { entry ->
+            entry.className to entry.genericSuperTypes.map { normalizeTypeName(it) }
+        }
 
         fun isAssignable(candidateType: String, dependencyType: String): Boolean {
             if (candidateType == dependencyType) {
@@ -212,6 +344,28 @@ internal object StaticDiagnosisEngine {
                 entry.interfaceNames.forEach(queue::addLast)
             }
             return false
+        }
+
+        fun isGenericMatch(bean: BeanDefinition, injectionPoint: InjectionPointDefinition): Boolean {
+            val dependencyGenericType = injectionPoint.dependencyGenericType?.let(::normalizeTypeName) ?: return true
+            val candidateGenericTypes = buildList {
+                bean.exposedGenericType?.let { add(normalizeTypeName(it)) }
+                addAll(genericSuperTypeIndex[bean.exposedType].orEmpty())
+            }
+            if (candidateGenericTypes.isEmpty()) {
+                return true
+            }
+            return candidateGenericTypes.any { it == dependencyGenericType }
+        }
+
+        fun hasClass(className: String): Boolean {
+            return index.containsKey(className) || runCatching {
+                Class.forName(className, false, StaticDiagnosisEngine::class.java.classLoader)
+            }.isSuccess
+        }
+
+        private fun normalizeTypeName(typeName: String): String {
+            return typeName.replace(" ", "")
         }
     }
 }

@@ -16,12 +16,31 @@ internal enum class DiagnosticSeverity {
     WARNING,
 }
 
+internal enum class ConditionEvaluationState {
+    ENABLED,
+    DISABLED,
+    UNKNOWN,
+}
+
 internal data class ClassIndexEntry(
     val className: String,
     val packageName: String,
     val sourceFile: String?,
     val superClassName: String?,
     val interfaceNames: List<String>,
+    val genericSuperTypes: List<String> = emptyList(),
+)
+
+internal data class ConditionDescriptor(
+    val annotationName: String,
+    val attributes: Map<String, Any>,
+)
+
+internal data class TypeAliasDefinition(
+    val packageName: String,
+    val aliasName: String,
+    val targetType: String,
+    val sourceFile: String,
 )
 
 internal data class BeanDefinition(
@@ -32,18 +51,22 @@ internal data class BeanDefinition(
     val packageName: String,
     val sourceFile: String?,
     val kind: BeanKind,
+    val exposedGenericType: String?,
     val primary: Boolean,
     val order: Int?,
     val conditionalAnnotations: List<String>,
+    val conditions: List<ConditionDescriptor>,
 )
 
 internal data class InjectionPointDefinition(
     val ownerClassName: String,
     val declarationName: String,
     val dependencyType: String,
+    val dependencyGenericType: String?,
     val ownerPackage: String,
     val sourceFile: String?,
     val kind: InjectionPointKind,
+    val parameterIndex: Int?,
     val qualifierName: String?,
     val required: Boolean,
 )
@@ -77,5 +100,6 @@ internal data class StaticAnalysisReport(
     val beanIndex: List<BeanDefinition>,
     val injectionPointIndex: List<InjectionPointDefinition>,
     val componentScans: List<ComponentScanDefinition>,
+    val typeAliasIndex: List<TypeAliasDefinition>,
     val diagnostics: List<StaticDiagnostic>,
 )

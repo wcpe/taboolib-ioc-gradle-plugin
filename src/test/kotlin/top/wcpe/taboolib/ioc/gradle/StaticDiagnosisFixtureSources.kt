@@ -63,7 +63,50 @@ internal object StaticDiagnosisFixtureSources {
             ),
             "fixture/scan/annotations/ConditionalOnProperty.java" to annotationSource(
                 name = "ConditionalOnProperty",
-                body = "String name();",
+                body = """
+                String[] name() default {};
+                String[] value() default {};
+                String havingValue() default "";
+                boolean matchIfMissing() default false;
+                """.trimIndent(),
+                targets = "TYPE, METHOD",
+            ),
+            "fixture/scan/annotations/ConditionalOnClass.java" to annotationSource(
+                name = "ConditionalOnClass",
+                body = """
+                String[] name() default {};
+                String[] value() default {};
+                String[] type() default {};
+                """.trimIndent(),
+                targets = "TYPE, METHOD",
+            ),
+            "fixture/scan/annotations/ConditionalOnMissingClass.java" to annotationSource(
+                name = "ConditionalOnMissingClass",
+                body = """
+                String[] name() default {};
+                String[] value() default {};
+                String[] type() default {};
+                """.trimIndent(),
+                targets = "TYPE, METHOD",
+            ),
+            "fixture/scan/annotations/ConditionalOnBean.java" to annotationSource(
+                name = "ConditionalOnBean",
+                body = """
+                String[] name() default {};
+                String[] beanName() default {};
+                String[] value() default {};
+                String[] type() default {};
+                """.trimIndent(),
+                targets = "TYPE, METHOD",
+            ),
+            "fixture/scan/annotations/ConditionalOnMissingBean.java" to annotationSource(
+                name = "ConditionalOnMissingBean",
+                body = """
+                String[] name() default {};
+                String[] beanName() default {};
+                String[] value() default {};
+                String[] type() default {};
+                """.trimIndent(),
                 targets = "TYPE, METHOD",
             ),
             "fixture/included/scan/Contracts.java" to """
@@ -76,6 +119,10 @@ internal object StaticDiagnosisFixtureSources {
                 interface ConditionalService {}
                 interface RuntimeOnlyService {}
                 interface SingleMethodService {}
+                interface EnabledConditionalService {}
+                interface MissingClassConditionalService {}
+                interface BeanConditionalService {}
+                interface MessageBox<T> {}
             """.trimIndent(),
             "fixture/included/scan/ScannedGateway.java" to """
                 package fixture.included.scan;
@@ -110,11 +157,18 @@ internal object StaticDiagnosisFixtureSources {
 
                 @Bean
                 class SingleMethodServiceImpl implements SingleMethodService {}
+
+                class StringMessageBox implements MessageBox<String> {}
+
+                class IntegerMessageBox implements MessageBox<Integer> {}
             """.trimIndent(),
             "fixture/included/scan/StaticDiagnosisConfiguration.java" to """
                 package fixture.included.scan;
 
                 import fixture.scan.annotations.Bean;
+                import fixture.scan.annotations.ConditionalOnBean;
+                import fixture.scan.annotations.ConditionalOnClass;
+                import fixture.scan.annotations.ConditionalOnMissingClass;
                 import fixture.scan.annotations.ComponentScan;
                 import fixture.scan.annotations.ConditionalOnProperty;
                 import fixture.scan.annotations.Configuration;
@@ -135,12 +189,47 @@ internal object StaticDiagnosisFixtureSources {
                     }
 
                     @Bean
+                    @ConditionalOnProperty(name = "feature.enabled", havingValue = "on")
+                    EnabledConditionalService enabledConditionalService() {
+                        return new EnabledConditionalServiceImpl();
+                    }
+
+                    @Bean
+                    @ConditionalOnMissingClass(name = "fixture.missing.Dependency")
+                    MissingClassConditionalService missingClassConditionalService() {
+                        return new MissingClassConditionalServiceImpl();
+                    }
+
+                    @Bean
+                    @ConditionalOnBean(type = "fixture.included.scan.PaymentProcessor")
+                    BeanConditionalService beanConditionalService() {
+                        return new BeanConditionalServiceImpl();
+                    }
+
+                    @Bean
+                    @ConditionalOnClass(name = "java.lang.String")
+                    MessageBox<String> stringMessageBox() {
+                        return new StringMessageBox();
+                    }
+
+                    @Bean
+                    MessageBox<Integer> integerMessageBox() {
+                        return new IntegerMessageBox();
+                    }
+
+                    @Bean
                     MethodInjectedBean methodInjectedBean(AuditService auditService) {
                         return new MethodInjectedBean(auditService);
                     }
                 }
 
                 class ConditionalServiceImpl implements ConditionalService {}
+
+                class EnabledConditionalServiceImpl implements EnabledConditionalService {}
+
+                class MissingClassConditionalServiceImpl implements MissingClassConditionalService {}
+
+                class BeanConditionalServiceImpl implements BeanConditionalService {}
 
                 class MethodInjectedBean {
                     MethodInjectedBean(AuditService auditService) {}
@@ -183,6 +272,26 @@ internal object StaticDiagnosisFixtureSources {
                 @Bean
                 class ConditionalOnlyConsumer {
                     ConditionalOnlyConsumer(ConditionalService conditionalService) {}
+                }
+
+                @Bean
+                class EnabledConditionalConsumer {
+                    EnabledConditionalConsumer(EnabledConditionalService enabledConditionalService) {}
+                }
+
+                @Bean
+                class MissingClassConditionalConsumer {
+                    MissingClassConditionalConsumer(MissingClassConditionalService missingClassConditionalService) {}
+                }
+
+                @Bean
+                class BeanConditionalConsumer {
+                    BeanConditionalConsumer(BeanConditionalService beanConditionalService) {}
+                }
+
+                @Bean
+                class GenericStringConsumer {
+                    GenericStringConsumer(MessageBox<String> messageBox) {}
                 }
 
                 @Bean

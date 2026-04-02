@@ -53,6 +53,8 @@ taboolibIoc {
     autoTakeover = true
     iocVersion = '1.0.0-SNAPSHOT'
     targetPackage = 'com.example.custom'
+    analysisFailOnError = true
+    analysisFailOnWarning = false
     dependencyNotation = 'top.wcpe.taboolib.ioc:taboolib-ioc:1.0.0-SNAPSHOT'
     useLocalProject ':ioc-lib'
 }
@@ -63,6 +65,8 @@ taboolibIoc {
 - `autoTakeover`：关闭后不再自动注入依赖，也不会自动追加 relocate。
 - `iocVersion`：默认读取 `taboolib.ioc.version`，若未设置则回退到当前项目版本。
 - `targetPackage`：显式指定目标包根，最终 relocate 目标统一为 `<targetPackage>.ioc`。如果已经以 `.ioc` 结尾，则不会重复追加。
+- `analysisFailOnError`：默认 `true`，静态诊断发现 error 时让 `analyzeTaboolibIocBeans` 和 `check/build` 失败。
+- `analysisFailOnWarning`：默认 `false`，打开后 warning 也会触发质量门失败。
 - `dependencyNotation`：改用外部 Maven 坐标。
 - `useLocalProject(':path')`：本地联调入口，用项目依赖替代外部坐标。
 
@@ -104,12 +108,18 @@ taboolibIoc {
 
 - `taboolibIocDoctor`：输出当前后端、依赖来源、目标包来源、是否已完成接管。
 - `verifyTaboolibIoc`：在 `jar`、`assemble`、`build` 前验证自动接管是否已经生效。
-- `analyzeTaboolibIocBeans`：扫描 `main` 编译产物，建立 Bean 索引与注入点索引，并输出静态诊断报告到 `build/reports/taboolib-ioc/static-diagnosis.json`。
+- `analyzeTaboolibIocBeans`：扫描当前模块编译产物，并联动扫描本地 project 依赖与 `taboo` 依赖产物，建立 Bean 索引、注入点索引和类型别名索引，输出静态诊断报告到 `build/reports/taboolib-ioc/static-diagnosis.json`。
 
 当前静态诊断已支持：
 
 - `error`：缺失 Bean、名称 Bean 不存在、名称 Bean 类型不兼容、多个 `@Primary`。
 - `warning`：多个候选且未限定、条件 Bean 才能满足依赖、依赖只能靠运行时手动 Bean 补足、`@ComponentScan` 可能排除某候选。
+
+当前额外支持的判定增强：
+
+- 泛型注入匹配：优先按 `MessageBox<String>` 这类泛型签名匹配 Bean，降低原始类型导致的误报。
+- Kotlin `typealias` 索引：报告中会额外输出 `typeAliasIndex`，便于把源码别名和字节码类型对应起来。
+- 更细的条件判断：支持 `ConditionalOnProperty`、`ConditionalOnClass`、`ConditionalOnMissingClass`、`ConditionalOnBean`、`ConditionalOnMissingBean` 的静态启停判断。
 
 ## 兼容性说明
 
@@ -134,7 +144,9 @@ taboolibIoc {
 
 ## 质量门
 
-- `build` 现在会通过 `jacocoTestCoverageVerification` 校验根工程测试覆盖率。
+- consumer 工程应用本插件后，`check/build` 现在会自动依赖 `analyzeTaboolibIocBeans`，默认把静态诊断 error 接入质量门。
+- `analysisFailOnError` 默认开启；`analysisFailOnWarning` 默认关闭，可按模块显式调整。
+- 根工程 `build` 现在会通过 `jacocoTestCoverageVerification` 校验根工程测试覆盖率。
 - 当前门槛为：行覆盖率不低于 75%，分支覆盖率不低于 55%。
 - 覆盖率报告输出位置：`build/reports/jacoco/test/`。
 
@@ -148,9 +160,10 @@ taboolibIoc {
 
 ## Example
 
-仓库内置了一个独立的真实联调工程：
+仓库内置了两个独立的真实联调工程：
 
-- `example/consumer`：真实 consumer，应用 `io.izzel.taboolib` 与当前插件。
+- `example/consumer`：错误与 warning 触发样例模块，保留全部静态诊断示例，并显式关闭分析质量门用于演示报告。
+- `example/quality-gate-consumer`：健康质量门模块，启用 `analysisFailOnError = true` 与 `analysisFailOnWarning = true`，作为 CI 绿灯样例。
 - `example/ioc-lib`：本地 IoC 库，供 `useLocalProject(':ioc-lib')` 联调。
 
 运行方式：
@@ -158,6 +171,7 @@ taboolibIoc {
 ```powershell
 .\gradlew.bat -p example :consumer:build
 .\gradlew.bat -p example :consumer:analyzeTaboolibIocBeans
+.\gradlew.bat -p example :quality-gate-consumer:build
 ```
 
 构建成功后，可检查 `example/consumer/build/libs` 下的 jar，确认其中已经出现 `com/example/demo/ioc/...`，且不再保留原始的 `top/wcpe/taboolib/ioc/...` 路径。

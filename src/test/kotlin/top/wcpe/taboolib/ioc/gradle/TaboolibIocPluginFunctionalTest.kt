@@ -173,6 +173,8 @@ class TaboolibIocPluginFunctionalTest {
                 includeIocLibrary = false,
                 localProjectPath = null,
                 includeStaticDiagnosisSamples = true,
+                analysisFailOnError = false,
+                analysisFailOnWarning = false,
             ),
         )
 
@@ -193,5 +195,42 @@ class TaboolibIocPluginFunctionalTest {
         assertContains(report, "conditional-bean-only")
         assertContains(report, "runtime-manual-bean-only")
         assertContains(report, "component-scan-may-exclude")
+    }
+
+    @Test
+    fun analyzeTaskFailsWhenFailOnErrorIsEnabled() {
+        val project = FunctionalTestProject(tempDir.resolve("static-diagnosis-error-gate")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                includeStaticDiagnosisSamples = true,
+                analysisFailOnError = true,
+            ),
+        )
+
+        val result = project.build(":consumer:analyzeTaboolibIocBeans", expectFailure = true)
+
+        assertContains(result.output, "failOnError=true")
+    }
+
+    @Test
+    fun analyzeTaskFailsWhenFailOnWarningIsEnabled() {
+        val project = FunctionalTestProject(tempDir.resolve("static-diagnosis-warning-gate")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                includeStaticDiagnosisSamples = true,
+                analysisFailOnError = false,
+                analysisFailOnWarning = true,
+            ),
+        )
+
+        val result = project.build(":consumer:analyzeTaboolibIocBeans", expectFailure = true)
+
+        assertContains(result.output, "failOnWarning=true")
     }
 }

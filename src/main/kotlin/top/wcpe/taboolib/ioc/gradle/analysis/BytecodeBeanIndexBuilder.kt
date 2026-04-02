@@ -1,8 +1,10 @@
 package top.wcpe.taboolib.ioc.gradle.analysis
 
+import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Locale
+import java.util.jar.JarFile
 import org.objectweb.asm.AnnotationVisitor
 import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassVisitor
@@ -13,39 +15,157 @@ import org.objectweb.asm.Type
 
 internal object BytecodeBeanIndexBuilder {
 
-    fun build(classDirectories: Iterable<Path>): BytecodeAnalysisIndex {
+    fun build(classpathEntries: Iterable<Path>): BytecodeAnalysisIndex {
         val classIndex = mutableListOf<ClassIndexEntry>()
         val beanIndex = mutableListOf<BeanDefinition>()
         val injectionPointIndex = mutableListOf<InjectionPointDefinition>()
         val componentScans = mutableListOf<ComponentScanDefinition>()
+        val existingEntries = classpathEntries.filter { Files.exists(it) }.distinct()
 
-        classDirectories
-            .filter { Files.exists(it) }
-            .forEach { root ->
-                Files.walk(root).use { stream ->
-                    stream.filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
-                        .forEach { classFile ->
-                            val scannedClass = scanClassFile(classFile) ?: return@forEach
-                            classIndex += scannedClass.classIndexEntry
-                            beanIndex += scannedClass.beanDefinitions
-                            injectionPointIndex += scannedClass.injectionPoints
-                            componentScans += scannedClass.componentScans
-                        }
+        existingEntries.forEach { entry ->
+            when {
+                Files.isDirectory(entry) -> scanDirectory(entry, classIndex, beanIndex, injectionPointIndex, componentScans)
+                Files.isRegularFile(entry) && entry.toString().endsWith(".jar") -> {
+                    scanJar(entry, classIndex, beanIndex, injectionPointIndex, componentScans)
                 }
             }
+        }
 
-        return BytecodeAnalysisIndex(
-            classIndex = classIndex.sortedBy { it.className },
-            beanIndex = beanIndex.sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.beanName })),
-            injectionPointIndex = injectionPointIndex.sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.kind.name })),
-            componentScans = componentScans.sortedBy { it.ownerClassName },
+        val rawIndex = BytecodeAnalysisIndex(
+            classIndex = classIndex.distinct().sortedBy { it.className },
+            beanIndex = beanIndex.distinct().sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.beanName })),
+            injectionPointIndex = injectionPointIndex.distinct().sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.kind.name })),
+            componentScans = componentScans.distinct().sortedBy { it.ownerClassName },
         )
+        return enrichGenericMetadata(rawIndex, existingEntries)
     }
 
-    private fun scanClassFile(classFile: Path): ScannedClass? {
+    private fun scanDirectory(
+        root: Path,
+        classIndex: MutableList<ClassIndexEntry>,
+        beanIndex: MutableList<BeanDefinition>,
+        injectionPointIndex: MutableList<InjectionPointDefinition>,
+        componentScans: MutableList<ComponentScanDefinition>,
+    ) {
+        Files.walk(root).use { stream ->
+            stream.filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
+                .forEach { classFile ->
+                    scanClassBytes(Files.readAllBytes(classFile), classIndex, beanIndex, injectionPointIndex, componentScans)
+                }
+        }
+    }
+
+    private fun scanJar(
+        jarPath: Path,
+        classIndex: MutableList<ClassIndexEntry>,
+        beanIndex: MutableList<BeanDefinition>,
+        injectionPointIndex: MutableList<InjectionPointDefinition>,
+        componentScans: MutableList<ComponentScanDefinition>,
+    ) {
+        JarFile(jarPath.toFile()).use { jarFile ->
+            jarFile.entries().asSequence()
+                .filter { !it.isDirectory && it.name.endsWith(".class") }
+                .forEach { entry ->
+                    jarFile.getInputStream(entry).use { input ->
+                        scanClassBytes(input.readBytes(), classIndex, beanIndex, injectionPointIndex, componentScans)
+                    }
+                }
+        }
+    }
+
+    private fun scanClassBytes(
+        classBytes: ByteArray,
+        classIndex: MutableList<ClassIndexEntry>,
+        beanIndex: MutableList<BeanDefinition>,
+        injectionPointIndex: MutableList<InjectionPointDefinition>,
+        componentScans: MutableList<ComponentScanDefinition>,
+    ) {
         val collector = ClassCollector()
-        ClassReader(Files.readAllBytes(classFile)).accept(collector, ClassReader.SKIP_CODE or ClassReader.SKIP_FRAMES)
-        return collector.toScannedClass()
+        ClassReader(classBytes).accept(collector, ClassReader.SKIP_CODE or ClassReader.SKIP_FRAMES)
+        val scannedClass = collector.toScannedClass() ?: return
+        classIndex += scannedClass.classIndexEntry
+        beanIndex += scannedClass.beanDefinitions
+        injectionPointIndex += scannedClass.injectionPoints
+        componentScans += scannedClass.componentScans
+    }
+
+    private fun enrichGenericMetadata(index: BytecodeAnalysisIndex, scanRoots: List<Path>): BytecodeAnalysisIndex {
+        if (scanRoots.isEmpty()) {
+            return index
+        }
+        val urls = scanRoots.map { it.toUri().toURL() }.toTypedArray()
+        URLClassLoader(urls, BytecodeBeanIndexBuilder::class.java.classLoader).use { classLoader ->
+            val updatedClassIndex = index.classIndex.map { entry ->
+                loadClass(entry.className, classLoader)?.let { clazz ->
+                    entry.copy(genericSuperTypes = collectGenericSuperTypes(clazz))
+                } ?: entry
+            }
+            val updatedBeans = index.beanIndex.map { bean -> enrichBeanDefinition(bean, classLoader) }
+            val updatedInjections = index.injectionPointIndex.map { injection -> enrichInjectionPoint(injection, classLoader) }
+            return index.copy(
+                classIndex = updatedClassIndex,
+                beanIndex = updatedBeans,
+                injectionPointIndex = updatedInjections,
+            )
+        }
+    }
+
+    private fun loadClass(className: String, classLoader: ClassLoader): Class<*>? {
+        return runCatching { Class.forName(className, false, classLoader) }.getOrNull()
+    }
+
+    private fun collectGenericSuperTypes(clazz: Class<*>): List<String> {
+        return buildList {
+            clazz.genericSuperclass
+                ?.typeName
+                ?.takeUnless { it == "java.lang.Object" }
+                ?.let { add(normalizeTypeName(it)) }
+            clazz.genericInterfaces
+                .map { normalizeTypeName(it.typeName) }
+                .forEach(::add)
+        }.distinct().sorted()
+    }
+
+    private fun enrichBeanDefinition(bean: BeanDefinition, classLoader: ClassLoader): BeanDefinition {
+        if (bean.kind != BeanKind.FACTORY_METHOD) {
+            return bean
+        }
+        val ownerClass = loadClass(bean.ownerClassName, classLoader) ?: return bean
+        val method = ownerClass.declaredMethods.firstOrNull {
+            it.name == bean.declarationName && it.returnType.name == bean.exposedType
+        } ?: return bean
+        return bean.copy(exposedGenericType = normalizeTypeName(method.genericReturnType.typeName))
+    }
+
+    private fun enrichInjectionPoint(injection: InjectionPointDefinition, classLoader: ClassLoader): InjectionPointDefinition {
+        val ownerClass = loadClass(injection.ownerClassName, classLoader) ?: return injection
+        val genericType = when (injection.kind) {
+            InjectionPointKind.FIELD -> ownerClass.declaredFields.firstOrNull {
+                it.name == injection.declarationName
+            }?.genericType?.typeName
+
+            InjectionPointKind.CONSTRUCTOR_PARAMETER -> ownerClass.declaredConstructors.firstOrNull { constructor ->
+                val parameterIndex = injection.parameterIndex ?: return@firstOrNull false
+                parameterIndex in constructor.parameterTypes.indices && constructor.parameterTypes[parameterIndex].name == injection.dependencyType
+            }?.genericParameterTypes?.getOrNull(injection.parameterIndex ?: -1)?.typeName
+
+            InjectionPointKind.METHOD_PARAMETER -> ownerClass.declaredMethods.firstOrNull { method ->
+                val parameterIndex = injection.parameterIndex ?: return@firstOrNull false
+                method.name == injection.declarationName &&
+                    parameterIndex in method.parameterTypes.indices &&
+                    method.parameterTypes[parameterIndex].name == injection.dependencyType
+            }?.genericParameterTypes?.getOrNull(injection.parameterIndex ?: -1)?.typeName
+        }
+        return injection.copy(dependencyGenericType = genericType?.let(::normalizeTypeName))
+    }
+
+    private fun normalizeTypeName(typeName: String): String {
+        return typeName
+            .replace("?extends", "")
+            .replace("?super", "")
+            .replace("? extends ", "")
+            .replace("? super ", "")
+            .replace(" ", "")
     }
 
     private data class ScannedClass(
@@ -128,7 +248,11 @@ internal object BytecodeBeanIndexBuilder {
                 }
 
                 override fun visitEnd() {
-                    fields += PendingField(name = name, type = Type.getType(descriptor).className, annotations = annotations.toList())
+                    fields += PendingField(
+                        name = name,
+                        type = Type.getType(descriptor).className,
+                        annotations = annotations.toList(),
+                    )
                 }
             }
         }
@@ -184,7 +308,7 @@ internal object BytecodeBeanIndexBuilder {
                 interfaceNames = interfaceNames,
             )
             val isBeanClass = classAnnotations.hasAnnotation("Bean") || classAnnotations.hasAnnotation("Configuration")
-            val classConditions = classAnnotations.conditionalAnnotationNames()
+            val classConditions = classAnnotations.conditionDescriptors()
             val beans = mutableListOf<BeanDefinition>()
             if (isBeanClass) {
                 beans += BeanDefinition(
@@ -195,9 +319,11 @@ internal object BytecodeBeanIndexBuilder {
                     packageName = packageName,
                     sourceFile = sourceFile,
                     kind = BeanKind.CLASS,
+                    exposedGenericType = null,
                     primary = classAnnotations.hasAnnotation("Primary"),
                     order = classAnnotations.annotationValue("Order", "value") as? Int,
-                    conditionalAnnotations = classConditions,
+                    conditionalAnnotations = classConditions.map { it.annotationName },
+                    conditions = classConditions,
                 )
             }
 
@@ -218,6 +344,8 @@ internal object BytecodeBeanIndexBuilder {
                 ?: emptyList()
 
             methods.filter { it.annotations.hasAnnotation("Bean") }.forEach { method ->
+                val methodConditions = (classConditions + method.annotations.conditionDescriptors())
+                    .distinctBy { it.annotationName + it.attributes.toString() }
                 beans += BeanDefinition(
                     ownerClassName = className,
                     declarationName = method.name,
@@ -226,10 +354,12 @@ internal object BytecodeBeanIndexBuilder {
                     packageName = packageName,
                     sourceFile = sourceFile,
                     kind = BeanKind.FACTORY_METHOD,
+                    exposedGenericType = null,
                     primary = classAnnotations.hasAnnotation("Primary") || method.annotations.hasAnnotation("Primary"),
                     order = (method.annotations.annotationValue("Order", "value") as? Int)
                         ?: (classAnnotations.annotationValue("Order", "value") as? Int),
-                    conditionalAnnotations = (classConditions + method.annotations.conditionalAnnotationNames()).distinct(),
+                    conditionalAnnotations = methodConditions.map { it.annotationName },
+                    conditions = methodConditions,
                 )
             }
 
@@ -239,9 +369,11 @@ internal object BytecodeBeanIndexBuilder {
                     ownerClassName = className,
                     declarationName = field.name,
                     dependencyType = field.type,
+                    dependencyGenericType = null,
                     ownerPackage = packageName,
                     sourceFile = sourceFile,
                     kind = InjectionPointKind.FIELD,
+                    parameterIndex = null,
                     qualifierName = field.annotations.qualifierName(),
                     required = field.annotations.requiredFlag(defaultValue = true),
                 )
@@ -254,9 +386,11 @@ internal object BytecodeBeanIndexBuilder {
                         ownerClassName = className,
                         declarationName = "constructor[$index]",
                         dependencyType = parameterType,
+                        dependencyGenericType = null,
                         ownerPackage = packageName,
                         sourceFile = sourceFile,
                         kind = InjectionPointKind.CONSTRUCTOR_PARAMETER,
+                        parameterIndex = index,
                         qualifierName = parameterAnnotations.qualifierName(),
                         required = parameterAnnotations.requiredFlag(
                             defaultValue = constructor.annotations.requiredFlag(defaultValue = true),
@@ -278,9 +412,11 @@ internal object BytecodeBeanIndexBuilder {
                         ownerClassName = className,
                         declarationName = method.name,
                         dependencyType = parameterType,
+                        dependencyGenericType = null,
                         ownerPackage = packageName,
                         sourceFile = sourceFile,
                         kind = InjectionPointKind.METHOD_PARAMETER,
+                        parameterIndex = index,
                         qualifierName = parameterAnnotations.qualifierName(),
                         required = parameterAnnotations.requiredFlag(
                             defaultValue = method.annotations.requiredFlag(defaultValue = true),
@@ -315,7 +451,7 @@ internal object BytecodeBeanIndexBuilder {
             return object : AnnotationVisitor(Opcodes.ASM9) {
                 override fun visit(name: String?, value: Any?) {
                     if (name != null && value != null) {
-                        values[name] = value
+                        values[name] = normalizeAnnotationValue(value)
                     }
                 }
 
@@ -330,7 +466,7 @@ internal object BytecodeBeanIndexBuilder {
                     return object : AnnotationVisitor(Opcodes.ASM9) {
                         override fun visit(name: String?, value: Any?) {
                             if (value != null) {
-                                arrayValues += value
+                                arrayValues += normalizeAnnotationValue(value)
                             }
                         }
 
@@ -351,14 +487,22 @@ internal object BytecodeBeanIndexBuilder {
                 }
             }
         }
+
+        private fun normalizeAnnotationValue(value: Any): Any {
+            return when (value) {
+                is Type -> value.className
+                else -> value
+            }
+        }
     }
 
     private fun List<CapturedAnnotation>.containsInjectionMetadata(): Boolean {
         return hasAnnotation("Inject") || hasAnnotation("Named") || hasAnnotation("Resource")
     }
 
-    private fun List<CapturedAnnotation>.conditionalAnnotationNames(): List<String> {
-        return filter { it.simpleName.startsWith("Conditional") }.map { it.simpleName }.distinct()
+    private fun List<CapturedAnnotation>.conditionDescriptors(): List<ConditionDescriptor> {
+        return filter { it.simpleName.startsWith("Conditional") }
+            .map { ConditionDescriptor(annotationName = it.simpleName, attributes = it.values) }
     }
 
     private fun List<CapturedAnnotation>.qualifierName(): String? {

@@ -3,9 +3,9 @@ package top.wcpe.taboolib.ioc.gradle
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.Task
+import org.gradle.api.plugins.JavaPluginExtension
+import org.gradle.language.base.plugins.LifecycleBasePlugin
 import org.gradle.api.tasks.TaskProvider
-import org.gradle.api.tasks.SourceSet
-import org.gradle.api.tasks.SourceSetContainer
 import top.wcpe.taboolib.ioc.gradle.analysis.AnalyzeTaboolibIocBeansTask
 import top.wcpe.taboolib.ioc.gradle.backend.BackendConfigurationResult
 import top.wcpe.taboolib.ioc.gradle.backend.PackagingBackend
@@ -13,6 +13,7 @@ import top.wcpe.taboolib.ioc.gradle.backend.PackagingBackendId
 import top.wcpe.taboolib.ioc.gradle.backend.StandaloneBackend
 import top.wcpe.taboolib.ioc.gradle.backend.TabooLibBackend
 import top.wcpe.taboolib.ioc.gradle.model.ResolvedIocConfiguration
+import top.wcpe.taboolib.ioc.gradle.model.ProjectDependencySpec
 
 class TaboolibIocPlugin : Plugin<Project> {
 
@@ -21,7 +22,7 @@ class TaboolibIocPlugin : Plugin<Project> {
         applyConventions(project, extension)
 
         val resolver = TaboolibIocResolver(project, extension)
-        registerAnalysisTask(project)
+        registerAnalysisTask(project, extension, resolver)
         val doctorTask = registerDoctorTask(project)
         val verifyTask = registerVerifyTask(project)
         registerDependencyHooks(project, extension, resolver)
@@ -103,6 +104,12 @@ class TaboolibIocPlugin : Plugin<Project> {
             project.providers.gradleProperty(TaboolibIocResolver.IOC_VERSION_PROPERTY)
                 .orElse(project.provider { defaultIocVersion(project) }),
         )
+        extension.analysisFailOnError.convention(
+            readBooleanProperty(project, "taboolib.ioc.analysis.fail-on-error") ?: true,
+        )
+        extension.analysisFailOnWarning.convention(
+            readBooleanProperty(project, "taboolib.ioc.analysis.fail-on-warning") ?: false,
+        )
     }
 
     private fun registerDoctorTask(
@@ -123,19 +130,59 @@ class TaboolibIocPlugin : Plugin<Project> {
         }
     }
 
-    private fun registerAnalysisTask(project: Project): TaskProvider<AnalyzeTaboolibIocBeansTask> {
+    private fun registerAnalysisTask(
+        project: Project,
+        extension: TaboolibIocExtension,
+        resolver: TaboolibIocResolver,
+    ): TaskProvider<AnalyzeTaboolibIocBeansTask> {
         val taskProvider = project.tasks.register("analyzeTaboolibIocBeans", AnalyzeTaboolibIocBeansTask::class.java) { task ->
             task.group = "taboolib ioc"
             task.description = "Builds bean and injection indexes from compiled classes and writes a static diagnosis report."
             task.reportFile.convention(project.layout.buildDirectory.file("reports/taboolib-ioc/static-diagnosis.json"))
+            task.failOnError.convention(extension.analysisFailOnError)
+            task.failOnWarning.convention(extension.analysisFailOnWarning)
+            task.projectPropertiesInput.convention(
+                project.provider {
+                    project.properties.entries.associate { (key, value) -> key.toString() to value.toString() }
+                },
+            )
         }
 
         project.pluginManager.withPlugin("java-base") {
-            val sourceSets = project.extensions.findByType(SourceSetContainer::class.java) ?: return@withPlugin
-            val mainSourceSet = sourceSets.findByName(SourceSet.MAIN_SOURCE_SET_NAME) ?: return@withPlugin
+            val javaExtension = project.extensions.findByType(JavaPluginExtension::class.java) ?: return@withPlugin
+            val mainSourceSet = javaExtension.sourceSets.findByName("main") ?: return@withPlugin
             taskProvider.configure { task ->
                 task.classDirectories.from(mainSourceSet.output.classesDirs)
+                task.sourceDirectories.from(mainSourceSet.allSource.srcDirs)
                 task.dependsOn(project.tasks.named(mainSourceSet.classesTaskName))
+            }
+            project.tasks.named(LifecycleBasePlugin.CHECK_TASK_NAME).configure { task ->
+                task.dependsOn(taskProvider)
+            }
+        }
+
+        project.pluginManager.withPlugin(TaboolibIocResolver.TABOOLIB_PLUGIN_ID) {
+            project.configurations.matching { it.name == TaboolibIocResolver.TABOO_CONFIGURATION_NAME }.all { configuration ->
+                taskProvider.configure { task ->
+                    task.dependencyArtifacts.from(configuration)
+                    task.dependsOn(configuration.buildDependencies)
+                }
+            }
+        }
+
+        project.afterEvaluate {
+            val resolution = runCatching { resolver.resolve() }.getOrNull() ?: return@afterEvaluate
+            val dependencySpec = resolution.dependencySpec
+            if (dependencySpec !is ProjectDependencySpec) {
+                return@afterEvaluate
+            }
+            val dependencyProject = project.findProject(dependencySpec.path) ?: return@afterEvaluate
+            val javaExtension = dependencyProject.extensions.findByType(JavaPluginExtension::class.java) ?: return@afterEvaluate
+            val mainSourceSet = javaExtension.sourceSets.findByName("main") ?: return@afterEvaluate
+            taskProvider.configure { task ->
+                task.classDirectories.from(mainSourceSet.output.classesDirs)
+                task.sourceDirectories.from(mainSourceSet.allSource.srcDirs)
+                task.dependsOn(dependencyProject.tasks.named(mainSourceSet.classesTaskName))
             }
         }
         return taskProvider

@@ -4,11 +4,15 @@ plugins {
     id 'top.wcpe.taboolib.ioc'
 }
 
-group = 'com.example.demo'
+group = 'com.example.quality'
 version = '1.0.0'
 
 repositories {
     mavenCentral()
+}
+
+dependencies {
+    implementation project(':ioc-lib')
 }
 
 java {
@@ -29,6 +33,6 @@ taboolib {
 
 taboolibIoc {
     useLocalProject ':ioc-lib'
-    analysisFailOnError = false
-    analysisFailOnWarning = false
+    analysisFailOnError = true
+    analysisFailOnWarning = true
 }

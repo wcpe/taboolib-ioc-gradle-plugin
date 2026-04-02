@@ -85,3 +85,16 @@
 方案：基于 `main` 编译产物做字节码扫描，先建立 Bean、注入点、`@ComponentScan` 与类型继承索引，再在 Gradle 任务中输出结构化 JSON 诊断报告，避免把分析能力绑死在运行时容器实现上。
 
 完成标准：`analyzeTaboolibIocBeans` 可稳定产出结构化静态诊断报告，example 中保留全部可触发规则的最小样例，根工程测试与 example 构建验证通过。
+
+## 阶段 7：静态诊断质量门与规则深化
+
+目标：把静态诊断真正接入 consumer 侧质量门，并提升规则在泛型、类型别名、跨模块依赖与条件注解场景下的可信度。
+
+任务：
+- [x] 为 `analyzeTaboolibIocBeans` 增加 `analysisFailOnError` / `analysisFailOnWarning` 配置，并接入 `check/build` 质量门与 CI 健康示例模块。
+- [x] 扩展静态诊断规则：补齐泛型匹配、Kotlin `typealias` 索引、跨模块依赖 Bean 扫描，以及 `ConditionalOnProperty`、`ConditionalOnClass`、`ConditionalOnMissingClass`、`ConditionalOnBean`、`ConditionalOnMissingBean` 的更细静态判断。
+- [x] 调整 example 结构：保留 `consumer` 的错误触发样例模块，同时新增 `quality-gate-consumer` 作为健康质量门模块，并验证两条链路都可复用。
+
+方案：在现有字节码索引基础上补目录 + jar 联合扫描、反射泛型补全、源码别名索引和条件求值，再通过模块级开关把静态诊断纳入 consumer 的 `check/build` 生命周期。
+
+完成标准：健康模块在 `analysisFailOnError = true` 与 `analysisFailOnWarning = true` 下可通过 `build`，错误样例模块仍能稳定输出完整报告，CI 已显式覆盖健康质量门链路。
