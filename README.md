@@ -126,11 +126,19 @@ taboolibIoc {
 - `StandaloneBackend` 只保留扩展边界，当前不能独立完成打包与 relocate。
 - 如果要扩展到更多 `io.izzel.taboolib` 版本，建议把 `example` 联调构建纳入 CI 做版本矩阵验证。
 
+## 质量门
+
+- `build` 现在会通过 `jacocoTestCoverageVerification` 校验根工程测试覆盖率。
+- 当前门槛为：行覆盖率不低于 75%，分支覆盖率不低于 55%。
+- 覆盖率报告输出位置：`build/reports/jacoco/test/`。
+
 ## 发布与版本策略
 
 - Gradle Plugin Marker：由 `java-gradle-plugin` 自动生成。
-- Maven 发布：根工程已接入 `maven-publish` 骨架，可根据实际仓库补充仓库地址与凭据。
-- 建议让插件版本与默认 `iocVersion` 对齐，降低联调时的认知成本。
+- Maven 发布：支持 `publishToMavenLocal`，也支持通过 `publish.repo.url`、`publish.repo.username`、`publish.repo.password` 或对应环境变量发布到远端 Maven 仓库。
+- Plugin Portal：保留 `publishPlugins` 流程，可通过 `gradle.publish.key`、`gradle.publish.secret` 或对应环境变量发布。
+- 建议让插件版本与默认 `iocVersion` 对齐；开发阶段使用 `-SNAPSHOT`，正式发布时移除 `-SNAPSHOT` 并同步更新 README 与 example 版本。
+- 详细步骤见 `docs/RELEASE.md`。
 
 ## Example
 
