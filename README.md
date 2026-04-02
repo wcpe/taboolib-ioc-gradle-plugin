@@ -105,6 +105,27 @@ taboolibIoc {
 - `taboolibIocDoctor`：输出当前后端、依赖来源、目标包来源、是否已完成接管。
 - `verifyTaboolibIoc`：在 `jar`、`assemble`、`build` 前验证自动接管是否已经生效。
 
+## 兼容性说明
+
+当前仓库内已经验证通过的组合：
+
+- Java：17
+- Gradle Wrapper：8.10.2
+- Kotlin JVM Plugin：2.3.0
+- `io.izzel.taboolib` Gradle 插件：2.0.36
+
+验证方式：
+
+- 根工程 `test`：覆盖 DSL、resolver、反射辅助、功能测试夹具与本地 project 依赖接管。
+- 根工程 `build`：验证插件自身可打包。
+- `example` 真实联调：验证 `useLocalProject(':ioc-lib')`、自动依赖注入、显式任务依赖与 relocate 产物路径。
+
+当前限制：
+
+- Gradle 9 尚未声明支持。真实 `io.izzel.taboolib` 在更高版本 Gradle 上仍可能出现上游弃用 API 警告或不兼容行为。
+- `StandaloneBackend` 只保留扩展边界，当前不能独立完成打包与 relocate。
+- 如果要扩展到更多 `io.izzel.taboolib` 版本，建议把 `example` 联调构建纳入 CI 做版本矩阵验证。
+
 ## 发布与版本策略
 
 - Gradle Plugin Marker：由 `java-gradle-plugin` 自动生成。
