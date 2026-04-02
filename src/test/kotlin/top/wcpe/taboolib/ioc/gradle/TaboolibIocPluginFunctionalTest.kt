@@ -30,6 +30,36 @@ class TaboolibIocPluginFunctionalTest {
     }
 
     @Test
+    fun doctorTaskReportsSuccessfulResolutionAndTakeoverState() {
+        val project = FunctionalTestProject(tempDir.resolve("doctor-success")).writeFixture(
+            FixtureOptions(),
+        )
+
+        val result = project.build(":consumer:taboolibIocDoctor")
+
+        assertContains(result.output, "[taboolibIocDoctor] dependency = project(:ioc-lib)")
+        assertContains(result.output, "[taboolibIocDoctor] configured = true")
+        assertContains(result.output, "top.wcpe.taboolib.ioc -> com.example.root.ioc")
+    }
+
+    @Test
+    fun doctorTaskReportsResolutionFailureWithoutCrashing() {
+        val project = FunctionalTestProject(tempDir.resolve("doctor-failure")).writeFixture(
+            FixtureOptions(
+                rootGroup = null,
+                consumerGroup = null,
+                localProjectPath = null,
+                includeIocLibrary = false,
+            ),
+        )
+
+        val result = project.build(":consumer:taboolibIocDoctor")
+
+        assertContains(result.output, "[taboolibIocDoctor] resolution = FAILED")
+        assertContains(result.output, "[taboolibIocDoctor] configured = false")
+    }
+
+    @Test
     fun failsBuildWhenTaboolibPluginMissing() {
         val project = FunctionalTestProject(tempDir.resolve("missing-taboolib")).writeFixture(
             FixtureOptions(
@@ -108,6 +138,17 @@ class TaboolibIocPluginFunctionalTest {
         val entries = project.consumerJarEntries()
         assertFalse(entries.contains("top/wcpe/taboolib/ioc/SampleService.class"))
         assertFalse(entries.contains("com/example/root/ioc/SampleService.class"))
+    }
+
+    @Test
+    fun verifyTaskLogsSkipMessageWhenAutoTakeoverDisabled() {
+        val project = FunctionalTestProject(tempDir.resolve("disabled-verify-task")).writeFixture(
+            FixtureOptions(autoTakeover = false),
+        )
+
+        val result = project.build(":consumer:verifyTaboolibIoc")
+
+        assertContains(result.output, "taboolibIoc.autoTakeover=false，已跳过自动接管验证")
     }
 
     @Test

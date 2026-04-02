@@ -131,7 +131,9 @@ class TaboolibIocPlugin : Plugin<Project> {
                         return@withDependencies
                     }
 
-                    val resolved = resolver.resolve()
+                    val resolved = runCatching { resolver.resolve() }.getOrElse {
+                        return@withDependencies
+                    }
                     if (resolved.backendId != PackagingBackendId.TABOOLIB || resolved.skipBecauseSubproject) {
                         return@withDependencies
                     }
