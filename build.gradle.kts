@@ -7,19 +7,19 @@ import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
 import org.gradle.testing.jacoco.tasks.JacocoReport
 
 plugins {
-    kotlin("jvm") version "2.3.0"
+    kotlin("jvm") version "1.9.25"
     `java-gradle-plugin`
     jacoco
     `maven-publish`
-    id("com.gradle.plugin-publish") version "2.0.0"
+    id("com.gradle.plugin-publish") version "2.1.1"
 }
 
 group = providers.gradleProperty("group").get()
 version = providers.gradleProperty("version").get()
 
-val projectWebsite = "https://github.com/TabooLib/taboolib-ioc-gradle-plugin"
-val projectScmConnection = "scm:git:https://github.com/TabooLib/taboolib-ioc-gradle-plugin.git"
-val projectScmDeveloperConnection = "scm:git:ssh://git@github.com/TabooLib/taboolib-ioc-gradle-plugin.git"
+val projectWebsite = "https://github.com/wcpe/taboolib-ioc-gradle-plugin"
+val projectScmConnection = "scm:git:https://github.com/wcpe/taboolib-ioc-gradle-plugin.git"
+val projectScmDeveloperConnection = "scm:git:ssh://git@github.com/wcpe/taboolib-ioc-gradle-plugin.git"
 
 repositories {
     mavenLocal()
