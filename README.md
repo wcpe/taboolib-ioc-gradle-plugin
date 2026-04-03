@@ -113,7 +113,12 @@ taboolibIoc {
 当前静态诊断已支持：
 
 - `error`：缺失 Bean、名称 Bean 不存在、名称 Bean 类型不兼容、多个 `@Primary`。
-- `warning`：多个候选且未限定、条件 Bean 才能满足依赖、依赖只能靠运行时手动 Bean 补足、`@ComponentScan` 可能排除某候选。
+- `warning`：多个候选且未限定、条件 Bean 无法被静态完全判定、依赖只能靠运行时手动 Bean 补足、`@ComponentScan` 可能排除某候选。
+
+说明：
+
+- 如果某个条件 Bean 在当前构建下已能静态判定为“不满足条件”，并且因此导致依赖拿不到 Bean，当前会直接按 `missing-bean` 记为 `error`。
+- 只有当条件表达式本身无法被静态完全判断时，才会保留为 `conditional-bean-only` 的 `warning`。
 
 当前额外支持的判定增强：
 
@@ -146,6 +151,9 @@ taboolibIoc {
 
 - consumer 工程应用本插件后，`check/build` 现在会自动依赖 `analyzeTaboolibIocBeans`，默认把静态诊断 error 接入质量门。
 - `analysisFailOnError` 默认开启；`analysisFailOnWarning` 默认关闭，可按模块显式调整。
+- 构建被拦下时，异常信息会直接打印规则名、注入点类名/声明名、依赖类型、候选 Bean 和报告路径，避免只能看到错误数量。
+- 同时会额外输出 `源码绝对路径:行:列: error|warning: ...` 的问题行，IntelliJ IDEA、VS Code 等通常可以直接点击跳转到对应源码位置。
+- 静态诊断也会接入 Gradle Problems API，因此 `build/reports/problems/problems-report.html` 中会出现结构化的 `Taboolib IoC / Static Diagnosis` 问题项，IDEA 导入 Gradle 项目时可利用这层结构化问题信息。
 - 根工程 `build` 现在会通过 `jacocoTestCoverageVerification` 校验根工程测试覆盖率。
 - 当前门槛为：行覆盖率不低于 75%，分支覆盖率不低于 55%。
 - 覆盖率报告输出位置：`build/reports/jacoco/test/`。
@@ -162,9 +170,26 @@ taboolibIoc {
 
 仓库内置了两个独立的真实联调工程：
 
-- `example/consumer`：错误与 warning 触发样例模块，保留全部静态诊断示例，并显式关闭分析质量门用于演示报告。
+- `example/consumer`：错误与 warning 触发样例模块，保留全部静态诊断示例，默认 error 会直接拦截 `build`。
 - `example/quality-gate-consumer`：健康质量门模块，启用 `analysisFailOnError = true` 与 `analysisFailOnWarning = true`，作为 CI 绿灯样例。
 - `example/ioc-lib`：本地 IoC 库，供 `useLocalProject(':ioc-lib')` 联调。
+
+如果你希望只生成报告而不拦截构建，需要显式关闭质量门，例如：
+
+```groovy
+taboolibIoc {
+    analysisFailOnError = false
+    analysisFailOnWarning = false
+}
+```
+
+或者在命令行临时跳过：
+
+```powershell
+.\gradlew.bat -p example :consumer:build -P "taboolib.ioc.analysis.fail-on-error=false" -P "taboolib.ioc.analysis.fail-on-warning=false"
+```
+
+默认情况下，`example/consumer` 中删掉一个实现 Bean 后，`build` 会被 `analyzeTaboolibIocBeans` 直接拦下，同时报告仍会先写入磁盘，便于继续查看明细。
 
 运行方式：
 
@@ -176,4 +201,4 @@ taboolibIoc {
 
 构建成功后，可检查 `example/consumer/build/libs` 下的 jar，确认其中已经出现 `com/example/demo/ioc/...`，且不再保留原始的 `top/wcpe/taboolib/ioc/...` 路径。
 
-执行 `analyzeTaboolibIocBeans` 后，可打开 `example/consumer/build/reports/taboolib-ioc/static-diagnosis.json` 查看 example 中所有静态诊断触发样例。
+执行 `analyzeTaboolibIocBeans` 后，可打开 `example/consumer/build/reports/taboolib-ioc/static-diagnosis.json` 查看 example 中所有静态诊断触发样例；即使任务因为 error 被拦下，报告也会先写出。

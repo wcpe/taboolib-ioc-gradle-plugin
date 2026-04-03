@@ -46,6 +46,8 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         assertContains(report, "component-scan-may-exclude")
         assertContains(report, "dependencyGenericType")
         assertContains(report, "conditions")
+        assertContains(report, "sourcePath")
+        assertContains(report, "sourceLine")
     }
 
     @Test
@@ -69,6 +71,10 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         }
 
         assertContains(error.message ?: "", "failOnError=true")
+        assertContains(error.message ?: "", "问题明细已按 IDE 可识别格式输出到上方日志")
+        assertContains(error.message ?: "", "MissingBeanConsumer#constructor[0]")
+        assertContains(error.message ?: "", "missing-bean")
+        assertContains(error.message ?: "", "source: Consumers.java")
     }
 
     @Test
@@ -92,5 +98,7 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         }
 
         assertContains(error.message ?: "", "failOnWarning=true")
+        assertContains(error.message ?: "", "问题明细已按 IDE 可识别格式输出到上方日志")
+        assertContains(error.message ?: "", "conditional-bean-only")
     }
 }

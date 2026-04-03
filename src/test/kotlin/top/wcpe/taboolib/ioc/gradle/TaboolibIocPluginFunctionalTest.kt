@@ -211,8 +211,18 @@ class TaboolibIocPluginFunctionalTest {
         )
 
         val result = project.build(":consumer:analyzeTaboolibIocBeans", expectFailure = true)
+        val problemsReport = project.readRelativeFile("build/reports/problems/problems-report.html")
 
         assertContains(result.output, "failOnError=true")
+        assertContains(result.output, "问题明细已按 IDE 可识别格式输出到上方日志")
+        assertContains(result.output, "MissingBeanConsumer#constructor[0]")
+        assertContains(result.output, "missing-bean")
+        assertContains(result.output, "error: [missing-bean]")
+        assertContains(result.output, "source: Consumers.java")
+        assertContains(problemsReport, "Taboolib IoC")
+        assertContains(problemsReport, "Static Diagnosis")
+        assertContains(problemsReport, "Missing Bean")
+        assertContains(problemsReport, "missing-bean")
     }
 
     @Test
@@ -232,5 +242,27 @@ class TaboolibIocPluginFunctionalTest {
         val result = project.build(":consumer:analyzeTaboolibIocBeans", expectFailure = true)
 
         assertContains(result.output, "failOnWarning=true")
+        assertContains(result.output, "conditional-bean-only")
+        assertContains(result.output, "warning: [conditional-bean-only]")
+    }
+
+    @Test
+    fun buildFailsByDefaultWhenStaticDiagnosisReportsErrors() {
+        val project = FunctionalTestProject(tempDir.resolve("static-diagnosis-build-gate")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                includeStaticDiagnosisSamples = true,
+            ),
+        )
+
+        val result = project.build(":consumer:build", expectFailure = true)
+
+        assertContains(result.output, ":consumer:analyzeTaboolibIocBeans")
+        assertContains(result.output, "failOnError=true")
+        assertContains(result.output, "MissingBeanConsumer#constructor[0]")
+        assertContains(result.output, "source: Consumers.java")
     }
 }

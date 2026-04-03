@@ -18,7 +18,7 @@ class BytecodeBeanIndexBuilderUnitTest {
     fun buildsBeanAndInjectionIndexesFromCompiledClasses() {
         val classesDir = StaticDiagnosisFixtureSources.compileJavaSources(tempDir)
 
-        val index = BytecodeBeanIndexBuilder.build(listOf(classesDir))
+        val index = BytecodeBeanIndexBuilder.build(listOf(classesDir), listOf(tempDir.resolve("src")))
 
         assertTrue(index.beanIndex.any { it.beanName == "namedProcessor" && it.kind == BeanKind.FACTORY_METHOD })
         assertTrue(index.beanIndex.any { it.beanName == "greetingPrimaryOne" && it.primary })

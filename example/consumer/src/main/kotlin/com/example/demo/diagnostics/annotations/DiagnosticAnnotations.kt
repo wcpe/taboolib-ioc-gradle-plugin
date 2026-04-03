@@ -50,3 +50,7 @@ annotation class ComponentScan(
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.BINARY)
 annotation class ConditionalOnProperty(val name: String)
+
+@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION)
+@Retention(AnnotationRetention.BINARY)
+annotation class ConditionalOnExpression(val value: String)

@@ -15,7 +15,10 @@ import org.objectweb.asm.Type
 
 internal object BytecodeBeanIndexBuilder {
 
-    fun build(classpathEntries: Iterable<Path>): BytecodeAnalysisIndex {
+    fun build(
+        classpathEntries: Iterable<Path>,
+        sourceDirectories: Iterable<Path> = emptyList(),
+    ): BytecodeAnalysisIndex {
         val classIndex = mutableListOf<ClassIndexEntry>()
         val beanIndex = mutableListOf<BeanDefinition>()
         val injectionPointIndex = mutableListOf<InjectionPointDefinition>()
@@ -37,7 +40,22 @@ internal object BytecodeBeanIndexBuilder {
             injectionPointIndex = injectionPointIndex.distinct().sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.kind.name })),
             componentScans = componentScans.distinct().sortedBy { it.ownerClassName },
         )
-        return enrichGenericMetadata(rawIndex, existingEntries)
+        val genericIndex = enrichGenericMetadata(rawIndex, existingEntries)
+        return enrichSourceLocations(genericIndex, sourceDirectories)
+    }
+
+    private fun enrichSourceLocations(index: BytecodeAnalysisIndex, sourceDirectories: Iterable<Path>): BytecodeAnalysisIndex {
+        val sourceLocationIndex = SourceLocationIndexBuilder.build(sourceDirectories)
+        return index.copy(
+            injectionPointIndex = index.injectionPointIndex.map { injection ->
+                val location = sourceLocationIndex.resolve(injection)
+                injection.copy(
+                    sourcePath = location?.sourcePath,
+                    sourceLine = location?.sourceLine,
+                    sourceColumn = location?.sourceColumn,
+                )
+            },
+        )
     }
 
     private fun scanDirectory(
@@ -372,6 +390,9 @@ internal object BytecodeBeanIndexBuilder {
                     dependencyGenericType = null,
                     ownerPackage = packageName,
                     sourceFile = sourceFile,
+                    sourcePath = null,
+                    sourceLine = null,
+                    sourceColumn = null,
                     kind = InjectionPointKind.FIELD,
                     parameterIndex = null,
                     qualifierName = field.annotations.qualifierName(),
@@ -389,6 +410,9 @@ internal object BytecodeBeanIndexBuilder {
                         dependencyGenericType = null,
                         ownerPackage = packageName,
                         sourceFile = sourceFile,
+                        sourcePath = null,
+                        sourceLine = null,
+                        sourceColumn = null,
                         kind = InjectionPointKind.CONSTRUCTOR_PARAMETER,
                         parameterIndex = index,
                         qualifierName = parameterAnnotations.qualifierName(),
@@ -415,6 +439,9 @@ internal object BytecodeBeanIndexBuilder {
                         dependencyGenericType = null,
                         ownerPackage = packageName,
                         sourceFile = sourceFile,
+                        sourcePath = null,
+                        sourceLine = null,
+                        sourceColumn = null,
                         kind = InjectionPointKind.METHOD_PARAMETER,
                         parameterIndex = index,
                         qualifierName = parameterAnnotations.qualifierName(),

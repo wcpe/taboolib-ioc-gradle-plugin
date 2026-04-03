@@ -29,6 +29,4 @@ taboolib {
 
 taboolibIoc {
     useLocalProject ':ioc-lib'
-    analysisFailOnError = false
-    analysisFailOnWarning = false
 }

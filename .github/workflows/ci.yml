@@ -29,8 +29,8 @@ jobs:
       - name: Build quality gate consumer
         run: .\gradlew.bat -p example :quality-gate-consumer:build
 
-      - name: Build example consumer
-        run: .\gradlew.bat -p example :consumer:build
+      - name: Build example consumer with explicit report-only override
+        run: .\gradlew.bat -p example :consumer:build -P "taboolib.ioc.analysis.fail-on-error=false" -P "taboolib.ioc.analysis.fail-on-warning=false"
 
       - name: Upload test and coverage reports
         if: always()

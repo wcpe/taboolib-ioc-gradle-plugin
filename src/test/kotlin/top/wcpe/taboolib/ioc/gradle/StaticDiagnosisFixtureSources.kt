@@ -109,6 +109,11 @@ internal object StaticDiagnosisFixtureSources {
                 """.trimIndent(),
                 targets = "TYPE, METHOD",
             ),
+            "fixture/scan/annotations/ConditionalOnExpression.java" to annotationSource(
+                name = "ConditionalOnExpression",
+                body = "String value();",
+                targets = "TYPE, METHOD",
+            ),
             "fixture/included/scan/Contracts.java" to """
                 package fixture.included.scan;
 
@@ -122,6 +127,7 @@ internal object StaticDiagnosisFixtureSources {
                 interface EnabledConditionalService {}
                 interface MissingClassConditionalService {}
                 interface BeanConditionalService {}
+                interface UnknownConditionalService {}
                 interface MessageBox<T> {}
             """.trimIndent(),
             "fixture/included/scan/ScannedGateway.java" to """
@@ -168,6 +174,7 @@ internal object StaticDiagnosisFixtureSources {
                 import fixture.scan.annotations.Bean;
                 import fixture.scan.annotations.ConditionalOnBean;
                 import fixture.scan.annotations.ConditionalOnClass;
+                import fixture.scan.annotations.ConditionalOnExpression;
                 import fixture.scan.annotations.ConditionalOnMissingClass;
                 import fixture.scan.annotations.ComponentScan;
                 import fixture.scan.annotations.ConditionalOnProperty;
@@ -207,6 +214,12 @@ internal object StaticDiagnosisFixtureSources {
                     }
 
                     @Bean
+                    @ConditionalOnExpression("${'$'}{feature.dynamic:true}")
+                    UnknownConditionalService unknownConditionalService() {
+                        return new UnknownConditionalServiceImpl();
+                    }
+
+                    @Bean
                     @ConditionalOnClass(name = "java.lang.String")
                     MessageBox<String> stringMessageBox() {
                         return new StringMessageBox();
@@ -230,6 +243,8 @@ internal object StaticDiagnosisFixtureSources {
                 class MissingClassConditionalServiceImpl implements MissingClassConditionalService {}
 
                 class BeanConditionalServiceImpl implements BeanConditionalService {}
+
+                class UnknownConditionalServiceImpl implements UnknownConditionalService {}
 
                 class MethodInjectedBean {
                     MethodInjectedBean(AuditService auditService) {}
@@ -287,6 +302,11 @@ internal object StaticDiagnosisFixtureSources {
                 @Bean
                 class BeanConditionalConsumer {
                     BeanConditionalConsumer(BeanConditionalService beanConditionalService) {}
+                }
+
+                @Bean
+                class UnknownConditionalConsumer {
+                    UnknownConditionalConsumer(UnknownConditionalService unknownConditionalService) {}
                 }
 
                 @Bean

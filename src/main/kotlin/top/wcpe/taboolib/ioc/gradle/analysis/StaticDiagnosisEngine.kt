@@ -38,7 +38,8 @@ internal object StaticDiagnosisEngine {
         }
         val inScanCandidates = applyComponentScan(assignableCandidates, componentScans)
         val activeCandidates = inScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.ENABLED }
-        val conditionalCandidates = inScanCandidates.filter { beanConditionStates[it] != ConditionEvaluationState.ENABLED }
+        val unknownConditionCandidates = inScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.UNKNOWN }
+        val disabledConditionCandidates = inScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.DISABLED }
 
         val qualifierName = injectionPoint.qualifierName
         if (qualifierName != null) {
@@ -84,15 +85,30 @@ internal object StaticDiagnosisEngine {
 
             val namedActiveCandidates = namedInScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.ENABLED }
             if (namedActiveCandidates.isEmpty()) {
-                return listOf(
-                    diagnostic(
-                        severity = DiagnosticSeverity.WARNING,
-                        rule = "conditional-bean-only",
-                        injectionPoint = injectionPoint,
-                        message = "限定名称 '$qualifierName' 的依赖当前只能由条件 Bean 满足，且条件未全部静态确认。",
-                        candidateBeans = namedInScanCandidates.map { it.beanName },
-                    ),
-                )
+                val namedUnknownCandidates = namedInScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.UNKNOWN }
+                if (namedUnknownCandidates.isNotEmpty()) {
+                    return listOf(
+                        diagnostic(
+                            severity = DiagnosticSeverity.WARNING,
+                            rule = "conditional-bean-only",
+                            injectionPoint = injectionPoint,
+                            message = "限定名称 '$qualifierName' 的依赖当前只能由条件 Bean 满足，但条件无法被静态完全判定。",
+                            candidateBeans = namedUnknownCandidates.map { it.beanName },
+                        ),
+                    )
+                }
+                val namedDisabledCandidates = namedInScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.DISABLED }
+                if (namedDisabledCandidates.isNotEmpty()) {
+                    return listOf(
+                        diagnostic(
+                            severity = DiagnosticSeverity.ERROR,
+                            rule = "missing-bean",
+                            injectionPoint = injectionPoint,
+                            message = "限定名称 '$qualifierName' 的 Bean 存在，但其条件在当前构建下不满足，依赖 ${injectionPoint.dependencyType} 仍然缺失。",
+                            candidateBeans = namedDisabledCandidates.map { it.beanName },
+                        ),
+                    )
+                }
             }
 
             return emptyList()
@@ -100,13 +116,23 @@ internal object StaticDiagnosisEngine {
 
         if (activeCandidates.isEmpty()) {
             return when {
-                conditionalCandidates.isNotEmpty() -> listOf(
+                unknownConditionCandidates.isNotEmpty() -> listOf(
                     diagnostic(
                         severity = DiagnosticSeverity.WARNING,
                         rule = "conditional-bean-only",
                         injectionPoint = injectionPoint,
-                        message = "依赖 ${injectionPoint.dependencyType} 当前只能由条件 Bean 满足，且条件未全部静态确认。",
-                        candidateBeans = conditionalCandidates.map { it.beanName },
+                        message = "依赖 ${injectionPoint.dependencyType} 当前只能由条件 Bean 满足，但条件无法被静态完全判定。",
+                        candidateBeans = unknownConditionCandidates.map { it.beanName },
+                    ),
+                )
+
+                disabledConditionCandidates.isNotEmpty() -> listOf(
+                    diagnostic(
+                        severity = DiagnosticSeverity.ERROR,
+                        rule = "missing-bean",
+                        injectionPoint = injectionPoint,
+                        message = "依赖 ${injectionPoint.dependencyType} 存在条件 Bean 候选，但这些条件在当前构建下均不满足，因此依赖仍然缺失。",
+                        candidateBeans = disabledConditionCandidates.map { it.beanName },
                     ),
                 )
 
@@ -196,6 +222,12 @@ internal object StaticDiagnosisEngine {
             rule = rule,
             ownerClassName = injectionPoint.ownerClassName,
             declarationName = injectionPoint.declarationName,
+            sourceFile = injectionPoint.sourceFile,
+            sourcePath = injectionPoint.sourcePath,
+            sourceLine = injectionPoint.sourceLine,
+            sourceColumn = injectionPoint.sourceColumn,
+            injectionPointKind = injectionPoint.kind,
+            parameterIndex = injectionPoint.parameterIndex,
             dependencyType = injectionPoint.dependencyType,
             message = message,
             candidateBeans = candidateBeans.distinct().sorted(),
