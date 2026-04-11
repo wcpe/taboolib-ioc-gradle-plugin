@@ -4,6 +4,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import org.gradle.api.Project
 import org.gradle.testfixtures.ProjectBuilder
@@ -39,6 +40,10 @@ class TaboolibIocPluginUnitTest {
 
         assertTrue(extension.autoTakeover.get())
         assertEquals(PackagingBackendId.TABOOLIB, extension.backend.get())
-        assertEquals("2.0.0", extension.iocVersion.get())
+        assertNotEquals("2.0.0", extension.iocVersion.get())
+        assertEquals(
+            TaboolibIocPluginVersionLocator.resolveBundledVersion() ?: TaboolibIocResolver.DEFAULT_IOC_VERSION,
+            extension.iocVersion.get(),
+        )
     }
 }

@@ -13,6 +13,8 @@ internal data class FixtureOptions(
     val applyMockTaboolib: Boolean = true,
     val includeIocLibrary: Boolean = true,
     val includeStaticDiagnosisSamples: Boolean = false,
+    val useKotlinDslConsumer: Boolean = false,
+    val explicitIocVersion: String? = null,
     val analysisFailOnError: Boolean? = null,
     val analysisFailOnWarning: Boolean? = null,
     val explicitTargetPackage: String? = null,
@@ -46,11 +48,14 @@ internal class FunctionalTestProject(private val rootDir: Path) {
         return this
     }
 
-    fun build(vararg arguments: String, expectFailure: Boolean = false): BuildResult {
-        val runner = GradleRunner.create()
+    fun build(vararg arguments: String, expectFailure: Boolean = false, gradleVersion: String? = null): BuildResult {
+        var runner = GradleRunner.create()
             .withProjectDir(rootDir.toFile())
             .withArguments(*arguments, "--stacktrace")
             .withPluginClasspath()
+        if (!gradleVersion.isNullOrBlank()) {
+            runner = runner.withGradleVersion(gradleVersion)
+        }
         return if (expectFailure) {
             runner.buildAndFail()
         } else {
@@ -70,7 +75,8 @@ internal class FunctionalTestProject(private val rootDir: Path) {
     }
 
     private fun writeConsumerProject(options: FixtureOptions) {
-        writeFile(rootDir.resolve("consumer/build.gradle"), consumerBuildScript(options))
+        val buildScriptName = if (options.useKotlinDslConsumer) "build.gradle.kts" else "build.gradle"
+        writeFile(rootDir.resolve("consumer/$buildScriptName"), consumerBuildScript(options))
         writeFile(
             rootDir.resolve("consumer/src/main/java/fixture/consumer/ConsumerEntry.java"),
             javaSource(
@@ -92,14 +98,14 @@ internal class FunctionalTestProject(private val rootDir: Path) {
                 id 'java'
             }
 
-            group = 'top.wcpe.taboolib.ioc'
+            group = 'top.wcpe.taboolib.ioc.properties'
             version = '1.0.0-SNAPSHOT'
             """.trimIndent(),
         )
         writeFile(
             rootDir.resolve("ioc-lib/src/main/java/top/wcpe/taboolib/ioc/SampleService.java"),
             javaSource(
-                packageName = "top.wcpe.taboolib.ioc",
+                packageName = "top.wcpe.taboolib.ioc.properties",
                 className = "SampleService",
                 body = "public String marker() { return \"ioc\"; }",
             ),
@@ -152,13 +158,21 @@ internal class FunctionalTestProject(private val rootDir: Path) {
     }
 
     private fun consumerBuildScript(options: FixtureOptions): String {
+        return if (options.useKotlinDslConsumer) {
+            consumerKotlinBuildScript(options)
+        } else {
+            consumerGroovyBuildScript(options)
+        }
+    }
+
+    private fun consumerGroovyBuildScript(options: FixtureOptions): String {
         return buildString {
             appendLine("plugins {")
             appendLine("    id 'java'")
             if (options.applyMockTaboolib) {
                 appendLine("    id 'io.izzel.taboolib'")
             }
-            appendLine("    id 'top.wcpe.taboolib.ioc'")
+            appendLine("    id 'top.wcpe.taboolib.ioc.properties'")
             appendLine("}")
             if (options.consumerGroup != null) {
                 appendLine("group = '${options.consumerGroup}'")
@@ -168,7 +182,7 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             if (options.applyMockTaboolib) {
                 appendLine("taboolib {")
                 if (options.manualRelocationTarget != null) {
-                    appendLine("    relocate 'top.wcpe.taboolib.ioc', '${options.manualRelocationTarget}'")
+                    appendLine("    relocate 'top.wcpe.taboolib.ioc.properties', '${options.manualRelocationTarget}'")
                 }
                 if (options.taboolibSubproject) {
                     appendLine("    subproject = true")
@@ -178,6 +192,7 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             }
             appendLine("taboolibIoc {")
             appendLine("    autoTakeover = ${options.autoTakeover}")
+            options.explicitIocVersion?.let { appendLine("    iocVersion = '$it'") }
             options.analysisFailOnError?.let { appendLine("    analysisFailOnError = $it") }
             options.analysisFailOnWarning?.let { appendLine("    analysisFailOnWarning = $it") }
             if (options.explicitTargetPackage != null) {
@@ -185,6 +200,44 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             }
             if (options.localProjectPath != null && options.includeIocLibrary) {
                 appendLine("    useLocalProject '${options.localProjectPath}'")
+            }
+            appendLine("}")
+        }
+    }
+
+    private fun consumerKotlinBuildScript(options: FixtureOptions): String {
+        return buildString {
+            appendLine("plugins {")
+            appendLine("    java")
+            if (options.applyMockTaboolib) {
+                appendLine("    id(\"io.izzel.taboolib\")")
+            }
+            appendLine("    id(\"top.wcpe.taboolib.ioc.properties\")")
+            appendLine("}")
+            if (options.consumerGroup != null) {
+                appendLine("group = \"${options.consumerGroup}\"")
+            }
+            appendLine("version = \"1.0.0\"")
+            appendLine()
+            if (options.applyMockTaboolib) {
+                appendLine("taboolib {")
+                if (options.manualRelocationTarget != null) {
+                    appendLine("    relocate(\"top.wcpe.taboolib.ioc.properties\", \"${options.manualRelocationTarget}\")")
+                }
+                if (options.taboolibSubproject) {
+                    appendLine("    subproject = true")
+                }
+                appendLine("}")
+                appendLine()
+            }
+            appendLine("taboolibIoc {")
+            appendLine("    autoTakeover(${options.autoTakeover})")
+            options.explicitIocVersion?.let { appendLine("    iocVersion(\"$it\")") }
+            options.analysisFailOnError?.let { appendLine("    analysisFailOnError($it)") }
+            options.analysisFailOnWarning?.let { appendLine("    analysisFailOnWarning($it)") }
+            options.explicitTargetPackage?.let { appendLine("    targetPackage(\"$it\")") }
+            if (options.localProjectPath != null && options.includeIocLibrary) {
+                appendLine("    useLocalProject(\"${options.localProjectPath}\")")
             }
             appendLine("}")
         }
@@ -203,7 +256,7 @@ internal class FunctionalTestProject(private val rootDir: Path) {
     private fun mockTaboolibBuildScript(): String {
         return """
             plugins {
-                kotlin("jvm") version "2.3.0"
+                kotlin("jvm") version "1.9.25"
                 `java-gradle-plugin`
             }
 

@@ -101,8 +101,10 @@ class TaboolibIocPlugin : Plugin<Project> {
                 ?: PackagingBackendId.TABOOLIB,
         )
         extension.iocVersion.convention(
-            project.providers.gradleProperty(TaboolibIocResolver.IOC_VERSION_PROPERTY)
-                .orElse(project.provider { defaultIocVersion(project) }),
+            project.provider {
+                readStringProperty(project, TaboolibIocResolver.IOC_VERSION_PROPERTY)
+                    ?: defaultIocVersion()
+            },
         )
         extension.analysisFailOnError.convention(
             readBooleanProperty(project, "taboolib.ioc.analysis.fail-on-error") ?: true,
@@ -235,12 +237,22 @@ class TaboolibIocPlugin : Plugin<Project> {
             ?.toBooleanStrictOrNull()
     }
 
-    private fun defaultIocVersion(project: Project): String {
-        val projectVersion = project.version.toString().trim()
-        return if (projectVersion.isEmpty() || projectVersion == "unspecified") {
-            TaboolibIocResolver.DEFAULT_IOC_VERSION
-        } else {
-            projectVersion
+    private fun readStringProperty(project: Project, name: String): String? {
+        val gradleProperty = project.providers.gradleProperty(name)
+            .orNull
+            ?.trim()
+            ?.takeUnless { it.isEmpty() }
+        if (gradleProperty != null) {
+            return gradleProperty
         }
+        return project.findProperty(name)
+            ?.toString()
+            ?.trim()
+            ?.takeUnless { it.isEmpty() }
+    }
+
+    private fun defaultIocVersion(): String {
+        return TaboolibIocPluginVersionLocator.resolveBundledVersion()
+            ?: TaboolibIocResolver.DEFAULT_IOC_VERSION
     }
 }

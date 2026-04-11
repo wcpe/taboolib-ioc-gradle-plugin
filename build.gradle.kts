@@ -1,10 +1,6 @@
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
-import org.gradle.api.publish.maven.MavenPublication
-import java.math.BigDecimal
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
-import org.gradle.testing.jacoco.tasks.JacocoReport
 
 plugins {
     kotlin("jvm") version "1.9.25"
@@ -26,6 +22,7 @@ repositories {
     mavenCentral()
     gradlePluginPortal()
     maven("https://repo.tabooproject.org/repository/releases/")
+    maven("https://maven.wcpe.top/repository/maven-public/")
 }
 
 dependencies {
@@ -56,26 +53,17 @@ gradlePlugin {
 publishing {
     repositories {
         mavenLocal()
-
-        val publishRepoUrl = providers.gradleProperty("publish.repo.url")
-            .orElse(providers.environmentVariable("MAVEN_PUBLISH_URL"))
-            .orNull
-            ?.trim()
-            .orEmpty()
-        if (publishRepoUrl.isNotEmpty()) {
-            maven {
-                name = "target"
-                url = uri(publishRepoUrl)
-                isAllowInsecureProtocol = publishRepoUrl.startsWith("http://")
-                credentials {
-                    username = providers.gradleProperty("publish.repo.username")
-                        .orElse(providers.environmentVariable("MAVEN_PUBLISH_USERNAME"))
-                        .orNull
-                    password = providers.gradleProperty("publish.repo.password")
-                        .orElse(providers.environmentVariable("MAVEN_PUBLISH_PASSWORD"))
-                        .orNull
-                }
+        maven {
+            credentials {
+                username = project.findProperty("username").toString()
+                password = project.findProperty("password").toString()
             }
+            authentication {
+                create<BasicAuthentication>("basic")
+            }
+            val releasesRepoUrl = uri("https://maven.wcpe.top/repository/maven-releases/")
+            val snapshotsRepoUrl = uri("https://maven.wcpe.top/repository/maven-snapshots/")
+            url = if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl else releasesRepoUrl
         }
     }
 
@@ -166,7 +154,7 @@ tasks.register("printPublishTargets") {
             .orEmpty()
         logger.lifecycle("[publish] version = ${project.version}")
         logger.lifecycle("[publish] local = publishToMavenLocal")
-        logger.lifecycle("[publish] remote = ${if (publishRepoUrl.isEmpty()) "<not configured>" else publishRepoUrl}")
+        logger.lifecycle("[publish] remote = ${publishRepoUrl.ifEmpty { "<not configured>" }}")
         logger.lifecycle("[publish] portal = publishPlugins (requires gradle.publish.key / gradle.publish.secret)")
     }
 }

@@ -112,14 +112,14 @@ class TabooLibBackendUnitTest {
     fun ensureDependencyAddsAndDeduplicatesExternalDependency() {
         val project = buildProject("backend-module-dependency")
         val tabooConfiguration = project.configurations.create(TaboolibIocResolver.TABOO_CONFIGURATION_NAME)
-        val dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc", "taboolib-ioc", "1.0.0")
+        val dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.0.0")
 
         TabooLibBackend.ensureDependency(project, tabooConfiguration, dependencySpec)
         TabooLibBackend.ensureDependency(project, tabooConfiguration, dependencySpec)
 
         val dependencies = tabooConfiguration.dependencies.filterIsInstance<ExternalDependency>()
         assertEquals(1, dependencies.size)
-        assertEquals("top.wcpe.taboolib.ioc", dependencies.single().group)
+        assertEquals("top.wcpe.taboolib.ioc.properties", dependencies.single().group)
         assertEquals("taboolib-ioc", dependencies.single().name)
         assertEquals("1.0.0", dependencies.single().version)
     }
@@ -128,13 +128,13 @@ class TabooLibBackendUnitTest {
     fun ensureDependencyRejectsConflictingExternalDependency() {
         val project = buildProject("backend-module-conflict")
         val tabooConfiguration = project.configurations.create(TaboolibIocResolver.TABOO_CONFIGURATION_NAME)
-        project.dependencies.add(TaboolibIocResolver.TABOO_CONFIGURATION_NAME, "top.wcpe.taboolib.ioc:taboolib-ioc:2.0.0")
+        project.dependencies.add(TaboolibIocResolver.TABOO_CONFIGURATION_NAME, "top.wcpe.taboolib.ioc.properties:taboolib-ioc:2.0.0")
 
         val error = assertFailsWith<TaboolibIocConfigurationException> {
             TabooLibBackend.ensureDependency(
                 project,
                 tabooConfiguration,
-                ModuleDependencySpec("top.wcpe.taboolib.ioc", "taboolib-ioc", "1.0.0"),
+                ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.0.0"),
             )
         }
 
@@ -243,7 +243,7 @@ class TabooLibBackendUnitTest {
             backendId = PackagingBackendId.TABOOLIB,
             sourcePackage = TaboolibIocResolver.SOURCE_PACKAGE,
             targetPackage = TargetPackageResolution("com.example.demo", "project.group"),
-            dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc", "taboolib-ioc", "1.0.0-SNAPSHOT"),
+            dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.0.0-SNAPSHOT"),
             skipBecauseSubproject = skipBecauseSubproject,
         )
     }

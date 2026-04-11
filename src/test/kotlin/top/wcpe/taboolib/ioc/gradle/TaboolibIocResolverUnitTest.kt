@@ -31,7 +31,7 @@ class TaboolibIocResolverUnitTest {
         assertEquals("taboolibIoc.targetPackage", resolved.targetPackage.source)
         assertEquals("com.example.explicit.ioc", resolved.targetPackage.relocationTarget)
         assertEquals(
-            ModuleDependencySpec("top.wcpe.taboolib.ioc", "taboolib-ioc", "1.2.3"),
+            ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.2.3"),
             resolved.dependencySpec,
         )
     }
@@ -145,14 +145,14 @@ class TaboolibIocResolverUnitTest {
             "taboolib",
             FakeTaboolibExtension(
                 subproject = true,
-                relocation = linkedMapOf("top.wcpe.taboolib.ioc" to "com.example.demo.ioc"),
+                relocation = linkedMapOf("top.wcpe.taboolib.ioc.properties" to "com.example.demo.ioc"),
             ),
         )
         val resolver = TaboolibIocResolver(project, extension)
 
         assertTrue(resolver.isTaboolibSubproject())
         assertEquals(
-            mapOf("top.wcpe.taboolib.ioc" to "com.example.demo.ioc"),
+            mapOf("top.wcpe.taboolib.ioc.properties" to "com.example.demo.ioc"),
             resolver.readExistingRelocations(),
         )
     }

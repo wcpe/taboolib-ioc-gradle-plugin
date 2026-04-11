@@ -40,7 +40,7 @@ class TaboolibIocPluginFunctionalTest {
 
         assertContains(result.output, "[taboolibIocDoctor] dependency = project(:ioc-lib)")
         assertContains(result.output, "[taboolibIocDoctor] configured = true")
-        assertContains(result.output, "top.wcpe.taboolib.ioc -> com.example.root.ioc")
+        assertContains(result.output, "top.wcpe.taboolib.ioc.properties -> com.example.root.ioc")
     }
 
     @Test
@@ -195,6 +195,52 @@ class TaboolibIocPluginFunctionalTest {
         assertContains(report, "conditional-bean-only")
         assertContains(report, "runtime-manual-bean-only")
         assertContains(report, "component-scan-may-exclude")
+        assertContains(report, "missing-inject-annotation")
+    }
+
+    @Test
+    fun analyzeTaskRunsOnGradle89() {
+        val project = FunctionalTestProject(tempDir.resolve("static-diagnosis-gradle-89")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                includeStaticDiagnosisSamples = true,
+                analysisFailOnError = false,
+                analysisFailOnWarning = false,
+            ),
+        )
+
+        val result = project.build(
+            ":consumer:analyzeTaboolibIocBeans",
+            gradleVersion = "8.9",
+        )
+        val report = project.readRelativeFile("consumer/build/reports/taboolib-ioc/static-diagnosis.json")
+
+        assertContains(result.output, "[analyzeTaboolibIocBeans]")
+        assertContains(report, "missing-bean")
+        assertContains(report, "component-scan-may-exclude")
+        assertContains(report, "missing-inject-annotation")
+    }
+
+    @Test
+    fun kotlinDslConsumerCanConfigureVersionAndTargetPackage() {
+        val project = FunctionalTestProject(tempDir.resolve("kotlin-dsl-consumer")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                useKotlinDslConsumer = true,
+                explicitIocVersion = "9.9.9",
+                explicitTargetPackage = "com.example.kotlin",
+            ),
+        )
+
+        val result = project.build(":consumer:taboolibIocDoctor")
+
+        assertContains(result.output, "[taboolibIocDoctor] dependency = top.wcpe.taboolib.ioc.properties:taboolib-ioc:9.9.9")
+        assertContains(result.output, "top.wcpe.taboolib.ioc.properties -> com.example.kotlin.ioc")
     }
 
     @Test
@@ -218,11 +264,16 @@ class TaboolibIocPluginFunctionalTest {
         assertContains(result.output, "MissingBeanConsumer#constructor[0]")
         assertContains(result.output, "missing-bean")
         assertContains(result.output, "error: [missing-bean]")
+        assertContains(result.output, "MissingInjectComponentConsumer#componentService")
+        assertContains(result.output, "missing-inject-annotation")
+        assertContains(result.output, "error: [missing-inject-annotation]")
         assertContains(result.output, "source: Consumers.java")
         assertContains(problemsReport, "Taboolib IoC")
         assertContains(problemsReport, "Static Diagnosis")
         assertContains(problemsReport, "Missing Bean")
         assertContains(problemsReport, "missing-bean")
+        assertContains(problemsReport, "Missing Inject Annotation")
+        assertContains(problemsReport, "missing-inject-annotation")
     }
 
     @Test
@@ -263,6 +314,8 @@ class TaboolibIocPluginFunctionalTest {
         assertContains(result.output, ":consumer:analyzeTaboolibIocBeans")
         assertContains(result.output, "failOnError=true")
         assertContains(result.output, "MissingBeanConsumer#constructor[0]")
+        assertContains(result.output, "MissingInjectComponentConsumer#componentService")
+        assertContains(result.output, "missing-inject-annotation")
         assertContains(result.output, "source: Consumers.java")
     }
 }

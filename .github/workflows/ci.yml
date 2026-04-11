@@ -26,11 +26,23 @@ jobs:
       - name: Build root project
         run: .\gradlew.bat build
 
-      - name: Build quality gate consumer
-        run: .\gradlew.bat -p example :quality-gate-consumer:build
+      - name: Publish example ioc-lib to isolated mavenLocal
+        shell: pwsh
+        run: |
+          $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
+          .\gradlew.bat -p example :ioc-lib:publishToMavenLocal -Pexample.modules=ioc-lib "-Dmaven.repo.local=$exampleLocalRepo"
 
-      - name: Build example consumer with explicit report-only override
-        run: .\gradlew.bat -p example :consumer:build -P "taboolib.ioc.analysis.fail-on-error=false" -P "taboolib.ioc.analysis.fail-on-warning=false"
+      - name: Build Groovy DSL example
+        shell: pwsh
+        run: |
+          $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
+          .\gradlew.bat -p example :groovy-consumer:build -Pexample.modules=groovy-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
+
+      - name: Build Kotlin DSL example
+        shell: pwsh
+        run: |
+          $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
+          .\gradlew.bat -p example :kotlin-consumer:build -Pexample.modules=kotlin-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
 
       - name: Upload test and coverage reports
         if: always()
@@ -40,7 +52,8 @@ jobs:
           path: |
             build/reports/tests/test
             build/reports/jacoco/test
-            example/consumer/build/libs
-            example/consumer/build/reports/taboolib-ioc
-            example/quality-gate-consumer/build/reports/taboolib-ioc
+            example/groovy-consumer/build/libs
+            example/groovy-consumer/build/reports/taboolib-ioc
+            example/kotlin-consumer/build/libs
+            example/kotlin-consumer/build/reports/taboolib-ioc
           if-no-files-found: warn

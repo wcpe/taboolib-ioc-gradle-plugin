@@ -110,7 +110,7 @@ class TaboolibIocSupportUnitTest {
             backendId = PackagingBackendId.STANDALONE,
             sourcePackage = TaboolibIocResolver.SOURCE_PACKAGE,
             targetPackage = TargetPackageResolution("com.example.demo", "taboolibIoc.targetPackage"),
-            dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc", "taboolib-ioc", "1.0.0-SNAPSHOT"),
+            dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.0.0-SNAPSHOT"),
             skipBecauseSubproject = false,
         )
 

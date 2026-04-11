@@ -1,0 +1,15 @@
+
+pluginManagement {
+    repositories {
+        mavenLocal()
+        maven("https://maven.wcpe.top/repository/maven-public/")
+        mavenCentral()
+        gradlePluginPortal()
+    }
+
+    plugins {
+        id("top.wcpe.taboolib.ioc") version "0.0.2"
+    }
+}
+
+include("groovy-consumer", "kotlin-consumer")

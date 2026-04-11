@@ -3,11 +3,7 @@ package top.wcpe.taboolib.ioc.gradle.analysis
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.file.ConfigurableFileCollection
-import org.gradle.api.problems.Problem
-import org.gradle.api.problems.ProblemGroup
-import org.gradle.api.problems.ProblemId
 import org.gradle.api.problems.Problems
-import org.gradle.api.problems.Severity
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
@@ -26,12 +22,6 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
 
     companion object {
         private const val MAX_FAILURE_DETAILS = 12
-        private val pluginProblemGroup = ProblemGroup.create("taboolib-ioc", "Taboolib IoC")
-        private val staticDiagnosisProblemGroup = ProblemGroup.create(
-            "static-diagnosis",
-            "Static Diagnosis",
-            pluginProblemGroup,
-        )
     }
 
     @get:Inject
@@ -141,36 +131,14 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
     }
 
     private fun reportGradleProblems(report: StaticAnalysisReport) {
-        val createdProblems = report.diagnostics.map { diagnostic ->
-            val problemId = ProblemId.create(
-                diagnostic.rule,
-                ruleDisplayName(diagnostic.rule),
-                staticDiagnosisProblemGroup,
-            )
-            problems.reporter.create(problemId) { spec ->
-                spec.contextualLabel(buildContextualLabel(diagnostic))
-                    .details(diagnostic.message)
-                    .severity(toGradleSeverity(diagnostic.severity))
-                    .solution(buildSolution(diagnostic))
-                if (!diagnostic.sourcePath.isNullOrBlank()) {
-                    val line = diagnostic.sourceLine ?: 1
-                    val column = diagnostic.sourceColumn ?: 1
-                    spec.lineInFileLocation(diagnostic.sourcePath, line, column)
-                } else if (!diagnostic.sourceFile.isNullOrBlank()) {
-                    spec.fileLocation(diagnostic.sourceFile)
-                }
-            }
-        }
-        if (createdProblems.isNotEmpty()) {
-            problems.reporter.report(createdProblems)
-        }
-    }
-
-    private fun toGradleSeverity(severity: DiagnosticSeverity): Severity {
-        return when (severity) {
-            DiagnosticSeverity.ERROR -> Severity.ERROR
-            DiagnosticSeverity.WARNING -> Severity.WARNING
-        }
+        GradleProblemsCompat.reportStaticDiagnostics(
+            problems = problems,
+            diagnostics = report.diagnostics,
+            logger = logger,
+            contextualLabel = ::buildContextualLabel,
+            solution = ::buildSolution,
+            ruleDisplayName = ::ruleDisplayName,
+        )
     }
 
     private fun buildContextualLabel(diagnostic: StaticDiagnostic): String {
@@ -187,6 +155,7 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
             "component-scan-may-exclude" -> "调整 @ComponentScan 范围，确保目标 Bean 包路径被扫描到。"
             "runtime-manual-bean-only" -> "如果依赖必须存在，请提供静态可见 Bean；否则保持 optional 注入。"
             "conditional-bean-only" -> "让条件成立，或提供一个不依赖条件的备用 Bean。"
+            "missing-inject-annotation" -> "为该字段补充 @Inject/@Named/@Resource，或改为显式手动传入实例，不要直接裸引用 @Component Bean。"
             else -> "根据静态诊断报告修正对应 Bean 装配关系。"
         }
     }
@@ -201,6 +170,7 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
             "component-scan-may-exclude" -> "Component Scan May Exclude"
             "runtime-manual-bean-only" -> "Runtime Manual Bean Only"
             "conditional-bean-only" -> "Conditional Bean Only"
+            "missing-inject-annotation" -> "Missing Inject Annotation"
             else -> rule
         }
     }

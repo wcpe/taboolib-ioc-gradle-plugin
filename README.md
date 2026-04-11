@@ -21,9 +21,11 @@ plugins {
 
 ## 最小接入
 
+Groovy DSL：
+
 ```groovy
 plugins {
-    id 'org.jetbrains.kotlin.jvm' version '2.3.0'
+    id 'org.jetbrains.kotlin.jvm' version '1.9.25'
     id 'io.izzel.taboolib' version '2.0.36'
     id 'top.wcpe.taboolib.ioc'
 }
@@ -41,6 +43,18 @@ taboolib {
 }
 ```
 
+Kotlin DSL：
+
+```kotlin
+plugins {
+    kotlin("jvm") version "1.9.25"
+    id("io.izzel.taboolib") version "2.0.36"
+    id("top.wcpe.taboolib.ioc") version "1.0.0-SNAPSHOT"
+}
+
+group = "com.example.demo"
+```
+
 不写任何额外配置时，插件会默认注入：
 
 - 依赖：`top.wcpe.taboolib.ioc:taboolib-ioc:<iocVersion>`
@@ -48,22 +62,83 @@ taboolib {
 
 ## DSL
 
+Groovy DSL：
+
 ```groovy
 taboolibIoc {
+    // 是否启用自动接管：自动注入 IoC 依赖并自动追加 relocate 规则。
     autoTakeover = true
+
+    // IoC 依赖版本：当未显式指定 dependencyNotation 时，会用于推导默认坐标版本。
     iocVersion = '1.0.0-SNAPSHOT'
+
+    // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 com.example.custom.ioc。
     targetPackage = 'com.example.custom'
+
+    // 静态诊断发现 error 时直接拦截构建。
     analysisFailOnError = true
+
+    // 静态诊断发现 warning 时不拦截构建，仅输出报告。
     analysisFailOnWarning = false
+
+    // 使用外部 Maven 坐标作为 IoC 依赖来源。
     dependencyNotation = 'top.wcpe.taboolib.ioc:taboolib-ioc:1.0.0-SNAPSHOT'
-    useLocalProject ':ioc-lib'
+
+    // 本地联调方式（与 dependencyNotation 二选一）。
+    // 当前示例不启用本地项目，这里只保留写法演示。
+    // useLocalProject ':ioc-lib'
 }
+```
+
+Kotlin DSL：
+
+```kotlin
+taboolibIoc {
+    // 是否启用自动接管：自动注入 IoC 依赖并自动追加 relocate 规则。
+    autoTakeover(true)
+
+    // IoC 依赖版本：当未显式指定 dependency(...) 时，会用于推导默认坐标版本。
+    iocVersion("1.0.0-SNAPSHOT")
+
+    // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 com.example.custom.ioc。
+    targetPackage("com.example.custom")
+
+    // 静态诊断发现 error 时直接拦截构建。
+    analysisFailOnError(true)
+
+    // 静态诊断发现 warning 时不拦截构建，仅输出报告。
+    analysisFailOnWarning(false)
+
+    // 使用外部 Maven 坐标作为 IoC 依赖来源。
+    dependency("top.wcpe.taboolib.ioc:taboolib-ioc:1.0.0-SNAPSHOT")
+
+    // 本地联调方式（与 dependency(...) 二选一）。
+    // 当前示例不启用本地项目，这里只保留写法演示。
+    // useLocalProject(":ioc-lib")
+}
+```
+
+如果插件是被其他插件间接 apply 到当前工程，Kotlin DSL 可能拿不到 `taboolibIoc {}` 的类型安全访问器。此时可改用：
+
+```kotlin
+import top.wcpe.taboolib.ioc.gradle.TaboolibIocExtension
+
+extensions.configure<TaboolibIocExtension>("taboolibIoc") {
+    iocVersion.set("1.0.0-SNAPSHOT")
+    targetPackage.set("com.example.custom")
+}
+```
+
+或者直接在 `gradle.properties` 中声明：
+
+```properties
+taboolib.ioc.version=1.0.0-SNAPSHOT
 ```
 
 说明：
 
 - `autoTakeover`：关闭后不再自动注入依赖，也不会自动追加 relocate。
-- `iocVersion`：默认读取 `taboolib.ioc.version`，若未设置则回退到当前项目版本。
+- `iocVersion`：默认读取 `taboolib.ioc.version`；若未设置，则回退到插件自身打包时携带的版本；再无法确定时才回退到内置默认值 `1.0.0-SNAPSHOT`。不会再默认跟随 consumer 项目版本。
 - `targetPackage`：显式指定目标包根，最终 relocate 目标统一为 `<targetPackage>.ioc`。如果已经以 `.ioc` 结尾，则不会重复追加。
 - `analysisFailOnError`：默认 `true`，静态诊断发现 error 时让 `analyzeTaboolibIocBeans` 和 `check/build` 失败。
 - `analysisFailOnWarning`：默认 `false`，打开后 warning 也会触发质量门失败。
@@ -132,14 +207,14 @@ taboolibIoc {
 
 - Java：17
 - Gradle Wrapper：8.10.2
-- Kotlin JVM Plugin：2.3.0
+- Kotlin JVM Plugin：1.9.25
 - `io.izzel.taboolib` Gradle 插件：2.0.36
 
 验证方式：
 
 - 根工程 `test`：覆盖 DSL、resolver、反射辅助、功能测试夹具与本地 project 依赖接管。
 - 根工程 `build`：验证插件自身可打包。
-- `example` 真实联调：验证 `useLocalProject(':ioc-lib')`、自动依赖注入、显式任务依赖与 relocate 产物路径。
+- `example` 真实联调：验证 `dependency(...)` 依赖接入路径、自动依赖注入、显式任务依赖与 relocate 产物路径。
 
 当前限制：
 
@@ -168,11 +243,11 @@ taboolibIoc {
 
 ## Example
 
-仓库内置了两个独立的真实联调工程：
+仓库内置了两份真实语法示例工程：
 
-- `example/consumer`：错误与 warning 触发样例模块，保留全部静态诊断示例，默认 error 会直接拦截 `build`。
-- `example/quality-gate-consumer`：健康质量门模块，启用 `analysisFailOnError = true` 与 `analysisFailOnWarning = true`，作为 CI 绿灯样例。
-- `example/ioc-lib`：本地 IoC 库，供 `useLocalProject(':ioc-lib')` 联调。
+- `example/groovy-consumer`：Groovy DSL 集成样例，完整展示 `build.gradle` 中 `taboolibIoc {}` 的 Groovy DSL 配置与中文注释；实际通过 `dependencyNotation` 消费预发布到 `mavenLocal` 的 `taboolib-ioc`，不直接使用本地 project。
+- `example/kotlin-consumer`：Kotlin DSL 集成样例，完整展示 `build.gradle.kts` 中 `taboolibIoc {}` 的 Kotlin DSL 配置与中文注释；实际通过 `dependency(...)` 消费预发布到 `mavenLocal` 的 `taboolib-ioc`，不直接使用本地 project。
+- `example/ioc-lib`：本地 IoC 库，用于执行 `publishToMavenLocal`，给两份示例模块提供依赖坐标。
 
 如果你希望只生成报告而不拦截构建，需要显式关闭质量门，例如：
 
@@ -186,19 +261,26 @@ taboolibIoc {
 或者在命令行临时跳过：
 
 ```powershell
-.\gradlew.bat -p example :consumer:build -P "taboolib.ioc.analysis.fail-on-error=false" -P "taboolib.ioc.analysis.fail-on-warning=false"
+.\gradlew.bat -p example :groovy-consumer:build -P "taboolib.ioc.analysis.fail-on-error=false" -P "taboolib.ioc.analysis.fail-on-warning=false"
 ```
-
-默认情况下，`example/consumer` 中删掉一个实现 Bean 后，`build` 会被 `analyzeTaboolibIocBeans` 直接拦下，同时报告仍会先写入磁盘，便于继续查看明细。
 
 运行方式：
 
 ```powershell
-.\gradlew.bat -p example :consumer:build
-.\gradlew.bat -p example :consumer:analyzeTaboolibIocBeans
-.\gradlew.bat -p example :quality-gate-consumer:build
+$exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
+.\gradlew.bat -p example :ioc-lib:publishToMavenLocal -Pexample.modules=ioc-lib "-Dmaven.repo.local=$exampleLocalRepo"
+.\gradlew.bat -p example :groovy-consumer:build -Pexample.modules=groovy-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
+.\gradlew.bat -p example :kotlin-consumer:build -Pexample.modules=kotlin-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
+.\gradlew.bat -p example :groovy-consumer:analyzeTaboolibIocBeans -Pexample.modules=groovy-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
+.\gradlew.bat -p example :kotlin-consumer:analyzeTaboolibIocBeans -Pexample.modules=kotlin-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
 ```
 
-构建成功后，可检查 `example/consumer/build/libs` 下的 jar，确认其中已经出现 `com/example/demo/ioc/...`，且不再保留原始的 `top/wcpe/taboolib/ioc/...` 路径。
+其中 `:groovy-consumer:build` 和 `:kotlin-consumer:build` 前都需要先执行 `:ioc-lib:publishToMavenLocal`，并配合 `-Pexample.modules=...` 只加载当前需要的 example 模块；同时通过 `Join-Path (Resolve-Path "example").Path ".m2-local"` 生成隔离的本地 Maven 仓库绝对路径，避免与全局 `~/.m2` 中已有的同名 SNAPSHOT 冲突；追加 `--refresh-dependencies` 是为了让 Gradle 重新读取刚发布的本地 SNAPSHOT。
 
-执行 `analyzeTaboolibIocBeans` 后，可打开 `example/consumer/build/reports/taboolib-ioc/static-diagnosis.json` 查看 example 中所有静态诊断触发样例；即使任务因为 error 被拦下，报告也会先写出。
+构建成功后，可检查：
+
+- `example/groovy-consumer/build/libs` 下的 jar，确认其中已经出现 `com/example/groovy/ioc/...`。
+- `example/kotlin-consumer/build/libs` 下的 jar，确认其中已经出现 `com/example/custom/ioc/...`。
+- 两个产物中都不再保留原始的 `top/wcpe/taboolib/ioc/...` 路径。
+
+执行 `analyzeTaboolibIocBeans` 后，可打开对应模块下的 `build/reports/taboolib-ioc/static-diagnosis.json` 查看静态诊断报告。

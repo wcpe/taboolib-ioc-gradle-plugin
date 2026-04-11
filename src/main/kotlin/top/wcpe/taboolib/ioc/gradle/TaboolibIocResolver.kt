@@ -130,10 +130,10 @@ internal class TaboolibIocResolver(
 
     internal companion object {
         const val DEFAULT_IOC_ARTIFACT = "taboolib-ioc"
-        const val DEFAULT_IOC_GROUP = "top.wcpe.taboolib.ioc"
+        const val DEFAULT_IOC_GROUP = "top.wcpe.taboolib.ioc.properties"
         const val DEFAULT_IOC_VERSION = "1.0.0-SNAPSHOT"
         const val IOC_VERSION_PROPERTY = "taboolib.ioc.version"
-        const val SOURCE_PACKAGE = "top.wcpe.taboolib.ioc"
+        const val SOURCE_PACKAGE = "top.wcpe.taboolib.ioc.properties"
         const val TABOO_CONFIGURATION_NAME = "taboo"
         const val TABOOLIB_ENV_GROUP_PROPERTY = "taboolib.env.group"
         const val TABOOLIB_EXTENSION_NAME = "taboolib"
