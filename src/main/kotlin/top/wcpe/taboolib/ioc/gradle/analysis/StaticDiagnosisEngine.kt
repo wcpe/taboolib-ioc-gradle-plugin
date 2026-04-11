@@ -12,9 +12,13 @@ internal object StaticDiagnosisEngine {
         val beanConditionStates = index.beanIndex.associateWith { bean ->
             evaluateConditions(bean, index.beanIndex, hierarchy, projectProperties)
         }
-        val diagnostics = index.injectionPointIndex.flatMap { injectionPoint ->
-            analyzeInjectionPoint(injectionPoint, index.beanIndex, index.componentScans, hierarchy, beanConditionStates)
-        }.sortedWith(compareBy({ it.severity.name }, { it.ownerClassName }, { it.declarationName }, { it.rule }))
+        val diagnostics = (
+            index.injectionPointIndex.flatMap { injectionPoint ->
+                analyzeInjectionPoint(injectionPoint, index.beanIndex, index.componentScans, hierarchy, beanConditionStates)
+            } + index.missingInjectCandidateIndex.flatMap { candidate ->
+                analyzeMissingInjectCandidate(candidate, index.beanIndex, index.componentBeanTypes, hierarchy)
+            }
+            ).sortedWith(compareBy({ it.severity.name }, { it.ownerClassName }, { it.declarationName }, { it.rule }))
 
         return StaticAnalysisReport(
             projectPath = projectPath,
@@ -192,6 +196,32 @@ internal object StaticDiagnosisEngine {
         }
 
         return emptyList()
+    }
+
+    private fun analyzeMissingInjectCandidate(
+        candidate: InjectionPointDefinition,
+        beans: List<BeanDefinition>,
+        componentBeanTypes: List<String>,
+        hierarchy: TypeHierarchy,
+    ): List<StaticDiagnostic> {
+        val componentCandidates = beans.filter { bean ->
+            bean.kind == BeanKind.CLASS &&
+                bean.exposedType in componentBeanTypes &&
+                hierarchy.isAssignable(bean.exposedType, candidate.dependencyType) &&
+                hierarchy.isGenericMatch(bean, candidate)
+        }
+        if (componentCandidates.isEmpty()) {
+            return emptyList()
+        }
+        return listOf(
+            diagnostic(
+                severity = DiagnosticSeverity.ERROR,
+                rule = "missing-inject-annotation",
+                injectionPoint = candidate,
+                message = "字段 ${candidate.declarationName} 引用了可注入的 @Component Bean 类型 ${candidate.dependencyType}，但未声明 @Inject 注解。",
+                candidateBeans = componentCandidates.map { it.beanName },
+            ),
+        )
     }
 
     private fun applyComponentScan(

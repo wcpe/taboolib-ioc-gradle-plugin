@@ -101,6 +101,8 @@ internal data class BytecodeAnalysisIndex(
     val classIndex: List<ClassIndexEntry>,
     val beanIndex: List<BeanDefinition>,
     val injectionPointIndex: List<InjectionPointDefinition>,
+    val missingInjectCandidateIndex: List<InjectionPointDefinition>,
+    val componentBeanTypes: List<String>,
     val componentScans: List<ComponentScanDefinition>,
 )
 

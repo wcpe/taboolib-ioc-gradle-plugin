@@ -44,6 +44,7 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         assertContains(report, "conditional-bean-only")
         assertContains(report, "runtime-manual-bean-only")
         assertContains(report, "component-scan-may-exclude")
+        assertContains(report, "missing-inject-annotation")
         assertContains(report, "dependencyGenericType")
         assertContains(report, "conditions")
         assertContains(report, "sourcePath")
@@ -74,6 +75,8 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         assertContains(error.message ?: "", "问题明细已按 IDE 可识别格式输出到上方日志")
         assertContains(error.message ?: "", "MissingBeanConsumer#constructor[0]")
         assertContains(error.message ?: "", "missing-bean")
+        assertContains(error.message ?: "", "MissingInjectComponentConsumer#componentService")
+        assertContains(error.message ?: "", "missing-inject-annotation")
         assertContains(error.message ?: "", "source: Consumers.java")
     }
 

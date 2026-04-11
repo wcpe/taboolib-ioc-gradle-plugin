@@ -22,14 +22,33 @@ internal object BytecodeBeanIndexBuilder {
         val classIndex = mutableListOf<ClassIndexEntry>()
         val beanIndex = mutableListOf<BeanDefinition>()
         val injectionPointIndex = mutableListOf<InjectionPointDefinition>()
+        val missingInjectCandidateIndex = mutableListOf<InjectionPointDefinition>()
+        val componentBeanTypes = mutableListOf<String>()
         val componentScans = mutableListOf<ComponentScanDefinition>()
         val existingEntries = classpathEntries.filter { Files.exists(it) }.distinct()
 
         existingEntries.forEach { entry ->
             when {
-                Files.isDirectory(entry) -> scanDirectory(entry, classIndex, beanIndex, injectionPointIndex, componentScans)
+                Files.isDirectory(entry) -> scanDirectory(
+                    entry,
+                    classIndex,
+                    beanIndex,
+                    injectionPointIndex,
+                    missingInjectCandidateIndex,
+                    componentBeanTypes,
+                    componentScans,
+                )
+
                 Files.isRegularFile(entry) && entry.toString().endsWith(".jar") -> {
-                    scanJar(entry, classIndex, beanIndex, injectionPointIndex, componentScans)
+                    scanJar(
+                        entry,
+                        classIndex,
+                        beanIndex,
+                        injectionPointIndex,
+                        missingInjectCandidateIndex,
+                        componentBeanTypes,
+                        componentScans,
+                    )
                 }
             }
         }
@@ -38,6 +57,8 @@ internal object BytecodeBeanIndexBuilder {
             classIndex = classIndex.distinct().sortedBy { it.className },
             beanIndex = beanIndex.distinct().sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.beanName })),
             injectionPointIndex = injectionPointIndex.distinct().sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.kind.name })),
+            missingInjectCandidateIndex = missingInjectCandidateIndex.distinct().sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.kind.name })),
+            componentBeanTypes = componentBeanTypes.distinct().sorted(),
             componentScans = componentScans.distinct().sortedBy { it.ownerClassName },
         )
         val genericIndex = enrichGenericMetadata(rawIndex, existingEntries)
@@ -55,6 +76,25 @@ internal object BytecodeBeanIndexBuilder {
                     sourceColumn = location?.sourceColumn,
                 )
             },
+            missingInjectCandidateIndex = index.missingInjectCandidateIndex.mapNotNull { candidate ->
+                val fieldAnalysis = sourceLocationIndex.analyzeField(candidate)
+                if (fieldAnalysis != null) {
+                    if (fieldAnalysis.hasInitializer || fieldAnalysis.hasManualAssignment) {
+                        return@mapNotNull null
+                    }
+                    return@mapNotNull candidate.copy(
+                        sourcePath = fieldAnalysis.location.sourcePath,
+                        sourceLine = fieldAnalysis.location.sourceLine,
+                        sourceColumn = fieldAnalysis.location.sourceColumn,
+                    )
+                }
+                val location = sourceLocationIndex.resolve(candidate)
+                candidate.copy(
+                    sourcePath = location?.sourcePath,
+                    sourceLine = location?.sourceLine,
+                    sourceColumn = location?.sourceColumn,
+                )
+            },
         )
     }
 
@@ -63,12 +103,22 @@ internal object BytecodeBeanIndexBuilder {
         classIndex: MutableList<ClassIndexEntry>,
         beanIndex: MutableList<BeanDefinition>,
         injectionPointIndex: MutableList<InjectionPointDefinition>,
+        missingInjectCandidateIndex: MutableList<InjectionPointDefinition>,
+        componentBeanTypes: MutableList<String>,
         componentScans: MutableList<ComponentScanDefinition>,
     ) {
         Files.walk(root).use { stream ->
             stream.filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
                 .forEach { classFile ->
-                    scanClassBytes(Files.readAllBytes(classFile), classIndex, beanIndex, injectionPointIndex, componentScans)
+                    scanClassBytes(
+                        Files.readAllBytes(classFile),
+                        classIndex,
+                        beanIndex,
+                        injectionPointIndex,
+                        missingInjectCandidateIndex,
+                        componentBeanTypes,
+                        componentScans,
+                    )
                 }
         }
     }
@@ -78,6 +128,8 @@ internal object BytecodeBeanIndexBuilder {
         classIndex: MutableList<ClassIndexEntry>,
         beanIndex: MutableList<BeanDefinition>,
         injectionPointIndex: MutableList<InjectionPointDefinition>,
+        missingInjectCandidateIndex: MutableList<InjectionPointDefinition>,
+        componentBeanTypes: MutableList<String>,
         componentScans: MutableList<ComponentScanDefinition>,
     ) {
         JarFile(jarPath.toFile()).use { jarFile ->
@@ -85,7 +137,15 @@ internal object BytecodeBeanIndexBuilder {
                 .filter { !it.isDirectory && it.name.endsWith(".class") }
                 .forEach { entry ->
                     jarFile.getInputStream(entry).use { input ->
-                        scanClassBytes(input.readBytes(), classIndex, beanIndex, injectionPointIndex, componentScans)
+                        scanClassBytes(
+                            input.readBytes(),
+                            classIndex,
+                            beanIndex,
+                            injectionPointIndex,
+                            missingInjectCandidateIndex,
+                            componentBeanTypes,
+                            componentScans,
+                        )
                     }
                 }
         }
@@ -96,6 +156,8 @@ internal object BytecodeBeanIndexBuilder {
         classIndex: MutableList<ClassIndexEntry>,
         beanIndex: MutableList<BeanDefinition>,
         injectionPointIndex: MutableList<InjectionPointDefinition>,
+        missingInjectCandidateIndex: MutableList<InjectionPointDefinition>,
+        componentBeanTypes: MutableList<String>,
         componentScans: MutableList<ComponentScanDefinition>,
     ) {
         val collector = ClassCollector()
@@ -104,6 +166,8 @@ internal object BytecodeBeanIndexBuilder {
         classIndex += scannedClass.classIndexEntry
         beanIndex += scannedClass.beanDefinitions
         injectionPointIndex += scannedClass.injectionPoints
+        missingInjectCandidateIndex += scannedClass.missingInjectCandidates
+        componentBeanTypes += scannedClass.componentBeanTypes
         componentScans += scannedClass.componentScans
     }
 
@@ -120,10 +184,14 @@ internal object BytecodeBeanIndexBuilder {
             }
             val updatedBeans = index.beanIndex.map { bean -> enrichBeanDefinition(bean, classLoader) }
             val updatedInjections = index.injectionPointIndex.map { injection -> enrichInjectionPoint(injection, classLoader) }
+            val updatedMissingInjectCandidates = index.missingInjectCandidateIndex.map { candidate ->
+                enrichInjectionPoint(candidate, classLoader)
+            }
             return index.copy(
                 classIndex = updatedClassIndex,
                 beanIndex = updatedBeans,
                 injectionPointIndex = updatedInjections,
+                missingInjectCandidateIndex = updatedMissingInjectCandidates,
             )
         }
     }
@@ -190,6 +258,8 @@ internal object BytecodeBeanIndexBuilder {
         val classIndexEntry: ClassIndexEntry,
         val beanDefinitions: List<BeanDefinition>,
         val injectionPoints: List<InjectionPointDefinition>,
+        val missingInjectCandidates: List<InjectionPointDefinition>,
+        val componentBeanTypes: List<String>,
         val componentScans: List<ComponentScanDefinition>,
     )
 
@@ -200,18 +270,29 @@ internal object BytecodeBeanIndexBuilder {
     )
 
     private data class PendingField(
+        val access: Int,
         val name: String,
         val type: String,
         val annotations: List<CapturedAnnotation>,
-    )
+    ) {
+        val isFinal: Boolean
+            get() = access and Opcodes.ACC_FINAL != 0
+
+        val isStatic: Boolean
+            get() = access and Opcodes.ACC_STATIC != 0
+    }
 
     private data class PendingMethod(
+        val access: Int,
         val name: String,
         val returnType: String,
         val parameterTypes: List<String>,
         val annotations: List<CapturedAnnotation>,
         val parameterAnnotations: List<List<CapturedAnnotation>>,
-    )
+    ) {
+        val isPrivate: Boolean
+            get() = access and Opcodes.ACC_PRIVATE != 0
+    }
 
     private class ClassCollector : ClassVisitor(Opcodes.ASM9) {
 
@@ -256,7 +337,7 @@ internal object BytecodeBeanIndexBuilder {
             signature: String?,
             value: Any?,
         ): FieldVisitor? {
-            if (skipped || access and Opcodes.ACC_SYNTHETIC != 0 || access and Opcodes.ACC_STATIC != 0) {
+            if (skipped || access and Opcodes.ACC_SYNTHETIC != 0) {
                 return null
             }
             val annotations = mutableListOf<CapturedAnnotation>()
@@ -267,6 +348,7 @@ internal object BytecodeBeanIndexBuilder {
 
                 override fun visitEnd() {
                     fields += PendingField(
+                        access = access,
                         name = name,
                         type = Type.getType(descriptor).className,
                         annotations = annotations.toList(),
@@ -303,6 +385,7 @@ internal object BytecodeBeanIndexBuilder {
 
                 override fun visitEnd() {
                     methods += PendingMethod(
+                        access = access,
                         name = name,
                         returnType = Type.getReturnType(descriptor).className,
                         parameterTypes = parameterTypes,
@@ -325,10 +408,16 @@ internal object BytecodeBeanIndexBuilder {
                 superClassName = superClassName,
                 interfaceNames = interfaceNames,
             )
-            val isBeanClass = classAnnotations.hasAnnotation("Bean") || classAnnotations.hasAnnotation("Configuration")
+            val isKotlinObjectSingleton = isKotlinObjectSingleton()
+            val classBeanStereotype = classAnnotations.beanClassStereotype()
+            val isBeanClass = classBeanStereotype != null
             val classConditions = classAnnotations.conditionDescriptors()
             val beans = mutableListOf<BeanDefinition>()
+            val componentBeanTypes = mutableListOf<String>()
             if (isBeanClass) {
+                if (classBeanStereotype == "Component") {
+                    componentBeanTypes += className
+                }
                 beans += BeanDefinition(
                     ownerClassName = className,
                     declarationName = className.substringAfterLast('.'),
@@ -382,7 +471,11 @@ internal object BytecodeBeanIndexBuilder {
             }
 
             val injections = mutableListOf<InjectionPointDefinition>()
-            fields.filter { it.annotations.containsInjectionMetadata() }.forEach { field ->
+            fields.filter { field ->
+                field.annotations.containsInjectionMetadata() &&
+                    (!field.isStatic || isKotlinObjectSingleton) &&
+                    field.name != "INSTANCE"
+            }.forEach { field ->
                 injections += InjectionPointDefinition(
                     ownerClassName = className,
                     declarationName = field.name,
@@ -397,6 +490,28 @@ internal object BytecodeBeanIndexBuilder {
                     parameterIndex = null,
                     qualifierName = field.annotations.qualifierName(),
                     required = field.annotations.requiredFlag(defaultValue = true),
+                )
+            }
+            val missingInjectCandidates = fields.filter { field ->
+                !field.annotations.containsInjectionMetadata() &&
+                    !field.isFinal &&
+                    (!field.isStatic || isKotlinObjectSingleton) &&
+                    field.name != "INSTANCE"
+            }.map { field ->
+                InjectionPointDefinition(
+                    ownerClassName = className,
+                    declarationName = field.name,
+                    dependencyType = field.type,
+                    dependencyGenericType = null,
+                    ownerPackage = packageName,
+                    sourceFile = sourceFile,
+                    sourcePath = null,
+                    sourceLine = null,
+                    sourceColumn = null,
+                    kind = InjectionPointKind.FIELD,
+                    parameterIndex = null,
+                    qualifierName = null,
+                    required = true,
                 )
             }
 
@@ -456,6 +571,8 @@ internal object BytecodeBeanIndexBuilder {
                 classIndexEntry = classIndexEntry,
                 beanDefinitions = beans,
                 injectionPoints = injections,
+                missingInjectCandidates = missingInjectCandidates,
+                componentBeanTypes = componentBeanTypes,
                 componentScans = scans,
             )
         }
@@ -470,6 +587,19 @@ internal object BytecodeBeanIndexBuilder {
                 return annotatedConstructors
             }
             return if (isBeanClass && constructors.size == 1) constructors else emptyList()
+        }
+
+        private fun isKotlinObjectSingleton(): Boolean {
+            if (!classAnnotations.hasAnnotation("Metadata")) {
+                return false
+            }
+            val hasInstanceField = fields.any { field ->
+                field.name == "INSTANCE" && field.type == className && field.isStatic && field.isFinal
+            }
+            val hasPrivateNoArgConstructor = methods.any { method ->
+                method.name == "<init>" && method.parameterTypes.isEmpty() && method.isPrivate
+            }
+            return hasInstanceField && hasPrivateNoArgConstructor
         }
 
         private fun captureAnnotation(descriptor: String, onComplete: (CapturedAnnotation) -> Unit): AnnotationVisitor {
@@ -527,6 +657,15 @@ internal object BytecodeBeanIndexBuilder {
         return hasAnnotation("Inject") || hasAnnotation("Named") || hasAnnotation("Resource")
     }
 
+    private fun List<CapturedAnnotation>.beanClassStereotype(): String? {
+        return when {
+            hasAnnotation("Component") -> "Component"
+            hasAnnotation("Configuration") -> "Configuration"
+            hasAnnotation("Bean") -> "Bean"
+            else -> null
+        }
+    }
+
     private fun List<CapturedAnnotation>.conditionDescriptors(): List<ConditionDescriptor> {
         return filter { it.simpleName.startsWith("Conditional") }
             .map { ConditionDescriptor(annotationName = it.simpleName, attributes = it.values) }
@@ -557,10 +696,10 @@ internal object BytecodeBeanIndexBuilder {
     }
 
     private fun resolveBeanName(annotations: List<CapturedAnnotation>, defaultName: String): String {
-        val beanAnnotation = annotations.findAnnotation("Bean")
-        if (beanAnnotation == null) {
-            return defaultName
-        }
+        val beanAnnotation = sequenceOf("Bean", "Component")
+            .mapNotNull { annotationName -> annotations.findAnnotation(annotationName) }
+            .firstOrNull()
+            ?: return defaultName
         val explicitName = sequenceOf("beanName", "name", "value")
             .mapNotNull { beanAnnotation.values[it] as? String }
             .map { it.trim() }

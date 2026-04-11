@@ -23,6 +23,8 @@ class BytecodeBeanIndexBuilderUnitTest {
         assertTrue(index.beanIndex.any { it.beanName == "namedProcessor" && it.kind == BeanKind.FACTORY_METHOD })
         assertTrue(index.beanIndex.any { it.beanName == "greetingPrimaryOne" && it.primary })
         assertTrue(index.beanIndex.any { it.beanName == "staticDiagnosisConfiguration" && it.kind == BeanKind.CLASS })
+        assertTrue(index.beanIndex.any { it.beanName == "componentService" && it.kind == BeanKind.CLASS })
+        assertTrue(index.componentBeanTypes.contains("fixture.included.scan.ComponentService"))
         assertTrue(
             index.beanIndex.any {
                 it.beanName == "stringMessageBox" && it.exposedGenericType == "fixture.included.scan.MessageBox<java.lang.String>"
@@ -38,6 +40,40 @@ class BytecodeBeanIndexBuilderUnitTest {
                 it.kind == InjectionPointKind.FIELD && !it.required && it.dependencyType == "fixture.included.scan.RuntimeOnlyService"
             },
         )
+        assertTrue(
+            index.injectionPointIndex.any {
+                it.ownerClassName == "fixture.included.scan.ComponentConsumer" &&
+                    it.kind == InjectionPointKind.CONSTRUCTOR_PARAMETER &&
+                    it.dependencyType == "fixture.included.scan.ComponentService"
+            },
+        )
+        assertTrue(
+            index.injectionPointIndex.any {
+                it.ownerClassName == "fixture.included.scan.KotlinObjectLikeConsumer" &&
+                    it.kind == InjectionPointKind.FIELD &&
+                    it.declarationName == "componentService" &&
+                    it.dependencyType == "fixture.included.scan.ComponentService"
+            },
+        )
+        assertTrue(
+            index.missingInjectCandidateIndex.any {
+                it.ownerClassName == "fixture.included.scan.MissingInjectComponentConsumer" &&
+                    it.kind == InjectionPointKind.FIELD &&
+                    it.declarationName == "componentService" &&
+                    it.dependencyType == "fixture.included.scan.ComponentService"
+            },
+        )
+        assertTrue(
+            index.missingInjectCandidateIndex.any {
+                it.ownerClassName == "fixture.included.scan.KotlinObjectMissingInjectConsumer" &&
+                    it.kind == InjectionPointKind.FIELD &&
+                    it.declarationName == "componentService" &&
+                    it.dependencyType == "fixture.included.scan.ComponentService"
+            },
+        )
+        assertTrue(index.missingInjectCandidateIndex.none { it.ownerClassName == "fixture.included.scan.InitializedComponentConsumer" })
+        assertTrue(index.missingInjectCandidateIndex.none { it.ownerClassName == "fixture.included.scan.ManualAssignedComponentConsumer" })
+        assertTrue(index.missingInjectCandidateIndex.none { it.ownerClassName == "fixture.included.scan.KotlinObjectInitializedComponentConsumer" })
         assertTrue(
             index.injectionPointIndex.any {
                 it.kind == InjectionPointKind.METHOD_PARAMETER && it.declarationName == "setSingleMethodService"

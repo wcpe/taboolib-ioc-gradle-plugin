@@ -25,6 +25,15 @@ internal object StaticDiagnosisFixtureSources {
                 body = "",
                 targets = "TYPE",
             ),
+            "fixture/scan/annotations/Component.java" to annotationSource(
+                name = "Component",
+                body = """
+                String value() default "";
+                String name() default "";
+                String beanName() default "";
+                """.trimIndent(),
+                targets = "TYPE",
+            ),
             "fixture/scan/annotations/Primary.java" to annotationSource(
                 name = "Primary",
                 body = "",
@@ -59,6 +68,11 @@ internal object StaticDiagnosisFixtureSources {
                 String[] value() default {};
                 String[] basePackages() default {};
                 """.trimIndent(),
+                targets = "TYPE",
+            ),
+            "fixture/scan/annotations/Metadata.java" to annotationSource(
+                name = "Metadata",
+                body = "",
                 targets = "TYPE",
             ),
             "fixture/scan/annotations/ConditionalOnProperty.java" to annotationSource(
@@ -139,6 +153,7 @@ internal object StaticDiagnosisFixtureSources {
                 package fixture.included.scan;
 
                 import fixture.scan.annotations.Bean;
+                import fixture.scan.annotations.Component;
                 import fixture.scan.annotations.Primary;
 
                 @Bean(name = "wrongType")
@@ -163,6 +178,9 @@ internal object StaticDiagnosisFixtureSources {
 
                 @Bean
                 class SingleMethodServiceImpl implements SingleMethodService {}
+
+                @Component
+                class ComponentService {}
 
                 class StringMessageBox implements MessageBox<String> {}
 
@@ -254,7 +272,9 @@ internal object StaticDiagnosisFixtureSources {
                 package fixture.included.scan;
 
                 import fixture.scan.annotations.Bean;
+                import fixture.scan.annotations.Component;
                 import fixture.scan.annotations.Inject;
+                import fixture.scan.annotations.Metadata;
                 import fixture.scan.annotations.Named;
                 import fixture.scan.annotations.Resource;
 
@@ -323,6 +343,63 @@ internal object StaticDiagnosisFixtureSources {
                 @Bean
                 class ComponentScanExcludedConsumer {
                     ComponentScanExcludedConsumer(ScannedGateway scannedGateway) {}
+                }
+
+                @Component
+                class ComponentConsumer {
+                    ComponentConsumer(ComponentService componentService) {}
+                }
+
+                class MissingInjectComponentConsumer {
+                    ComponentService componentService;
+
+                    void message() {
+                        componentService.toString();
+                    }
+                }
+
+                class InitializedComponentConsumer {
+                    ComponentService componentService = new ComponentService();
+                }
+
+                class ManualAssignedComponentConsumer {
+                    ComponentService componentService;
+
+                    ManualAssignedComponentConsumer() {
+                        this.componentService = new ComponentService();
+                    }
+                }
+
+                @Metadata
+                class KotlinObjectInitializedComponentConsumer {
+                    static final KotlinObjectInitializedComponentConsumer INSTANCE = new KotlinObjectInitializedComponentConsumer();
+
+                    static ComponentService componentService = new ComponentService();
+
+                    private KotlinObjectInitializedComponentConsumer() {}
+                }
+
+                @Metadata
+                class KotlinObjectLikeConsumer {
+                    static final KotlinObjectLikeConsumer INSTANCE = new KotlinObjectLikeConsumer();
+
+                    @Inject
+                    static ComponentService componentService;
+
+                    private KotlinObjectLikeConsumer() {}
+                }
+
+                @Metadata
+                class KotlinObjectMissingInjectConsumer {
+                    static final KotlinObjectMissingInjectConsumer INSTANCE = new KotlinObjectMissingInjectConsumer();
+
+                    static ComponentService componentService;
+
+                    private KotlinObjectMissingInjectConsumer() {}
+
+                    void message() {
+                        componentService.toString();
+                    }
                 }
 
                 @Bean

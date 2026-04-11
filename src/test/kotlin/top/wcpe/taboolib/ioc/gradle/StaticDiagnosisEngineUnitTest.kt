@@ -29,6 +29,36 @@ class StaticDiagnosisEngineUnitTest {
         assertFalse(report.diagnostics.any { it.ownerClassName.endsWith("MissingClassConditionalConsumer") })
         assertFalse(report.diagnostics.any { it.ownerClassName.endsWith("BeanConditionalConsumer") })
         assertFalse(report.diagnostics.any { it.ownerClassName.endsWith("GenericStringConsumer") })
+        assertFalse(report.diagnostics.any { it.ownerClassName.endsWith(".ComponentConsumer") })
+        assertFalse(report.diagnostics.any { it.ownerClassName.endsWith(".InitializedComponentConsumer") })
+        assertFalse(report.diagnostics.any { it.ownerClassName.endsWith(".ManualAssignedComponentConsumer") })
+        assertFalse(report.diagnostics.any { it.ownerClassName.endsWith(".KotlinObjectInitializedComponentConsumer") })
+        assertFalse(report.diagnostics.any { it.ownerClassName.endsWith(".KotlinObjectLikeConsumer") })
+    }
+
+    @Test
+    fun reportsMissingInjectAnnotationForReferencedComponentFields() {
+        val classesDir = StaticDiagnosisFixtureSources.compileJavaSources(tempDir.resolve("missing-inject"))
+        val index = BytecodeBeanIndexBuilder.build(listOf(classesDir), listOf(tempDir.resolve("missing-inject/src")))
+        val report = StaticDiagnosisEngine.analyze(
+            projectPath = ":fixture",
+            index = index,
+            projectProperties = mapOf("feature.enabled" to "on"),
+        )
+
+        val fieldReference = report.diagnostics.single {
+            it.ownerClassName.endsWith("MissingInjectComponentConsumer")
+        }
+        assertEquals(DiagnosticSeverity.ERROR, fieldReference.severity)
+        assertEquals("missing-inject-annotation", fieldReference.rule)
+        assertTrue(fieldReference.candidateBeans.contains("componentService"))
+
+        val kotlinObjectReference = report.diagnostics.single {
+            it.ownerClassName.endsWith("KotlinObjectMissingInjectConsumer")
+        }
+        assertEquals(DiagnosticSeverity.ERROR, kotlinObjectReference.severity)
+        assertEquals("missing-inject-annotation", kotlinObjectReference.rule)
+        assertTrue(kotlinObjectReference.candidateBeans.contains("componentService"))
     }
 
     @Test
