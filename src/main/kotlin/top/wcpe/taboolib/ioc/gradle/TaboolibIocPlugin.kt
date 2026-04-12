@@ -41,6 +41,9 @@ class TaboolibIocPlugin : Plugin<Project> {
                 project.logger.lifecycle("[taboolibIocDoctor] taboolibSubproject = ${resolver.isTaboolibSubproject()}")
                 latestResolution.onSuccess {
                     project.logger.lifecycle("[taboolibIocDoctor] dependency = ${it.dependencySpec.displayName}")
+                    resolver.resolveTestDependencySpec(it.dependencySpec)?.let { testDependencySpec ->
+                        project.logger.lifecycle("[taboolibIocDoctor] testDependency = ${testDependencySpec.displayName}")
+                    }
                     project.logger.lifecycle(
                         "[taboolibIocDoctor] relocation = ${it.sourcePackage} -> ${it.targetPackage.relocationTarget} (${it.targetPackage.source})"
                     )
@@ -210,6 +213,27 @@ class TaboolibIocPlugin : Plugin<Project> {
                     }
 
                     TabooLibBackend.ensureDependency(project, configuration, resolved.dependencySpec)
+                }
+            }
+
+            project.pluginManager.withPlugin("java-base") {
+                project.configurations.matching { it.name == "testImplementation" }.all { configuration ->
+                    configuration.withDependencies {
+                        if (!extension.autoTakeover.get()) {
+                            return@withDependencies
+                        }
+
+                        val resolved = runCatching { resolver.resolve() }.getOrElse {
+                            return@withDependencies
+                        }
+                        if (resolved.backendId != PackagingBackendId.TABOOLIB || resolved.skipBecauseSubproject) {
+                            return@withDependencies
+                        }
+
+                        val testDependencySpec = resolver.resolveTestDependencySpec(resolved.dependencySpec)
+                            ?: return@withDependencies
+                        TabooLibBackend.ensureTestDependency(project, configuration, testDependencySpec)
+                    }
                 }
             }
         }

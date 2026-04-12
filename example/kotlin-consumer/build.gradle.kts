@@ -8,9 +8,10 @@ import io.izzel.taboolib.gradle.I18n
 import io.izzel.taboolib.gradle.Kether
 
 plugins {
+    java
     kotlin("jvm")
     id("io.izzel.taboolib") version "2.0.36"
-    id("top.wcpe.taboolib.ioc") version "0.0.2"
+    id("top.wcpe.taboolib.ioc") version "0.0.3"
 }
 
 
@@ -57,11 +58,6 @@ taboolibIoc {
     // 是否启用自动接管：自动注入 IoC 依赖并自动追加 relocate 规则。
     autoTakeover(true)
 
-    // IoC 依赖版本：当未显式指定 dependency(...) 时，会用于推导默认坐标版本。
-    iocVersion("1.2.0-SNAPSHOT")
-
-    // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 com.example.custom.ioc。
-    targetPackage("top.wcpe.mc.plugin.taboolib.ioc.example")
 
     // 静态诊断发现 error 时直接拦截构建。
     analysisFailOnError(true)

@@ -102,7 +102,7 @@ class TaboolibIocSupportUnitTest {
             .build()
         val extension = project.extensions.create("taboolibIoc", TaboolibIocExtension::class.java).apply {
             backend.set(PackagingBackendId.STANDALONE)
-            iocVersion.set("1.0.0-SNAPSHOT")
+            iocVersion.set(TaboolibIocResolver.DEFAULT_IOC_VERSION)
             targetPackage.set("com.example.demo")
         }
         val resolver = TaboolibIocResolver(project, extension)
@@ -110,7 +110,11 @@ class TaboolibIocSupportUnitTest {
             backendId = PackagingBackendId.STANDALONE,
             sourcePackage = TaboolibIocResolver.SOURCE_PACKAGE,
             targetPackage = TargetPackageResolution("com.example.demo", "taboolibIoc.targetPackage"),
-            dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.0.0-SNAPSHOT"),
+            dependencySpec = ModuleDependencySpec(
+                TaboolibIocResolver.DEFAULT_IOC_GROUP,
+                TaboolibIocResolver.DEFAULT_IOC_ARTIFACT,
+                TaboolibIocResolver.DEFAULT_IOC_VERSION,
+            ),
             skipBecauseSubproject = false,
         )
 

@@ -112,14 +112,14 @@ class TabooLibBackendUnitTest {
     fun ensureDependencyAddsAndDeduplicatesExternalDependency() {
         val project = buildProject("backend-module-dependency")
         val tabooConfiguration = project.configurations.create(TaboolibIocResolver.TABOO_CONFIGURATION_NAME)
-        val dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.0.0")
+        val dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc", "taboolib-ioc", "1.0.0")
 
         TabooLibBackend.ensureDependency(project, tabooConfiguration, dependencySpec)
         TabooLibBackend.ensureDependency(project, tabooConfiguration, dependencySpec)
 
         val dependencies = tabooConfiguration.dependencies.filterIsInstance<ExternalDependency>()
         assertEquals(1, dependencies.size)
-        assertEquals("top.wcpe.taboolib.ioc.properties", dependencies.single().group)
+        assertEquals("top.wcpe.taboolib.ioc", dependencies.single().group)
         assertEquals("taboolib-ioc", dependencies.single().name)
         assertEquals("1.0.0", dependencies.single().version)
     }
@@ -128,17 +128,63 @@ class TabooLibBackendUnitTest {
     fun ensureDependencyRejectsConflictingExternalDependency() {
         val project = buildProject("backend-module-conflict")
         val tabooConfiguration = project.configurations.create(TaboolibIocResolver.TABOO_CONFIGURATION_NAME)
-        project.dependencies.add(TaboolibIocResolver.TABOO_CONFIGURATION_NAME, "top.wcpe.taboolib.ioc.properties:taboolib-ioc:2.0.0")
+        project.dependencies.add(TaboolibIocResolver.TABOO_CONFIGURATION_NAME, "top.wcpe.taboolib.ioc:taboolib-ioc:2.0.0")
 
         val error = assertFailsWith<TaboolibIocConfigurationException> {
             TabooLibBackend.ensureDependency(
                 project,
                 tabooConfiguration,
-                ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.0.0"),
+                ModuleDependencySpec("top.wcpe.taboolib.ioc", "taboolib-ioc", "1.0.0"),
             )
         }
 
         assertContains(error.message ?: "", "重复的 IoC 模块依赖")
+    }
+
+    @Test
+    fun ensureTestDependencyAddsAndDeduplicatesOfficialTestModule() {
+        val project = buildProject("backend-test-module-dependency")
+        project.pluginManager.apply("java")
+        val testImplementationConfiguration = project.configurations.getByName("testImplementation")
+        val dependencySpec = ModuleDependencySpec(
+            TaboolibIocResolver.DEFAULT_IOC_GROUP,
+            TaboolibIocResolver.DEFAULT_IOC_TEST_ARTIFACT,
+            TaboolibIocResolver.DEFAULT_IOC_VERSION,
+        )
+
+        TabooLibBackend.ensureTestDependency(project, testImplementationConfiguration, dependencySpec)
+        TabooLibBackend.ensureTestDependency(project, testImplementationConfiguration, dependencySpec)
+
+        val dependencies = testImplementationConfiguration.dependencies.filterIsInstance<ExternalDependency>()
+        assertEquals(1, dependencies.size)
+        assertEquals(TaboolibIocResolver.DEFAULT_IOC_GROUP, dependencies.single().group)
+        assertEquals(TaboolibIocResolver.DEFAULT_IOC_TEST_ARTIFACT, dependencies.single().name)
+        assertEquals(TaboolibIocResolver.DEFAULT_IOC_VERSION, dependencies.single().version)
+    }
+
+    @Test
+    fun ensureTestDependencyRejectsConflictingOfficialTestModuleVersion() {
+        val project = buildProject("backend-test-module-conflict")
+        project.pluginManager.apply("java")
+        val testImplementationConfiguration = project.configurations.getByName("testImplementation")
+        project.dependencies.add(
+            testImplementationConfiguration.name,
+            "${TaboolibIocResolver.DEFAULT_IOC_GROUP}:${TaboolibIocResolver.DEFAULT_IOC_TEST_ARTIFACT}:9.9.9",
+        )
+
+        val error = assertFailsWith<TaboolibIocConfigurationException> {
+            TabooLibBackend.ensureTestDependency(
+                project,
+                testImplementationConfiguration,
+                ModuleDependencySpec(
+                    TaboolibIocResolver.DEFAULT_IOC_GROUP,
+                    TaboolibIocResolver.DEFAULT_IOC_TEST_ARTIFACT,
+                    TaboolibIocResolver.DEFAULT_IOC_VERSION,
+                ),
+            )
+        }
+
+        assertContains(error.message ?: "", "重复的 IoC 测试模块依赖")
     }
 
     @Test
@@ -233,7 +279,7 @@ class TabooLibBackendUnitTest {
             ?: project.extensions.create("taboolibIoc", TaboolibIocExtension::class.java).apply {
                 autoTakeover.set(true)
                 backend.set(PackagingBackendId.TABOOLIB)
-                iocVersion.set("1.0.0-SNAPSHOT")
+                iocVersion.set(TaboolibIocResolver.DEFAULT_IOC_VERSION)
             }
         return TaboolibIocResolver(project, extension)
     }
@@ -243,7 +289,11 @@ class TabooLibBackendUnitTest {
             backendId = PackagingBackendId.TABOOLIB,
             sourcePackage = TaboolibIocResolver.SOURCE_PACKAGE,
             targetPackage = TargetPackageResolution("com.example.demo", "project.group"),
-            dependencySpec = ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.0.0-SNAPSHOT"),
+            dependencySpec = ModuleDependencySpec(
+                TaboolibIocResolver.DEFAULT_IOC_GROUP,
+                TaboolibIocResolver.DEFAULT_IOC_ARTIFACT,
+                TaboolibIocResolver.DEFAULT_IOC_VERSION,
+            ),
             skipBecauseSubproject = skipBecauseSubproject,
         )
     }

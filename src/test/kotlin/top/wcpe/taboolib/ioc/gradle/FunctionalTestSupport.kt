@@ -33,12 +33,15 @@ internal class FunctionalTestProject(private val rootDir: Path) {
         rootDir.createDirectories()
         writeFile(rootDir.resolve("settings.gradle"), settingsScript(options))
         writeFile(rootDir.resolve("build.gradle"), rootBuildScript(options))
-        if (options.gradleProperties.isNotEmpty()) {
-            writeFile(
-                rootDir.resolve("gradle.properties"),
-                options.gradleProperties.entries.joinToString(separator = System.lineSeparator()) { "${it.key}=${it.value}" },
-            )
+        val mergedGradleProperties = linkedMapOf(
+            "kotlin.compiler.execution.strategy" to "in-process",
+        ).apply {
+            putAll(options.gradleProperties)
         }
+        writeFile(
+            rootDir.resolve("gradle.properties"),
+            mergedGradleProperties.entries.joinToString(separator = System.lineSeparator()) { "${it.key}=${it.value}" },
+        )
 
         writeMockTaboolibBuild()
         writeConsumerProject(options)
@@ -49,9 +52,13 @@ internal class FunctionalTestProject(private val rootDir: Path) {
     }
 
     fun build(vararg arguments: String, expectFailure: Boolean = false, gradleVersion: String? = null): BuildResult {
+        val runnerArguments = buildList {
+            addAll(arguments)
+            add("--stacktrace")
+        }
         var runner = GradleRunner.create()
             .withProjectDir(rootDir.toFile())
-            .withArguments(*arguments, "--stacktrace")
+            .withArguments(runnerArguments)
             .withPluginClasspath()
         if (!gradleVersion.isNullOrBlank()) {
             runner = runner.withGradleVersion(gradleVersion)
@@ -98,14 +105,14 @@ internal class FunctionalTestProject(private val rootDir: Path) {
                 id 'java'
             }
 
-            group = 'top.wcpe.taboolib.ioc.properties'
-            version = '1.0.0-SNAPSHOT'
+            group = '${TaboolibIocResolver.DEFAULT_IOC_GROUP}'
+            version = '${TaboolibIocResolver.DEFAULT_IOC_VERSION}'
             """.trimIndent(),
         )
         writeFile(
             rootDir.resolve("ioc-lib/src/main/java/top/wcpe/taboolib/ioc/SampleService.java"),
             javaSource(
-                packageName = "top.wcpe.taboolib.ioc.properties",
+                packageName = "top.wcpe.taboolib.ioc",
                 className = "SampleService",
                 body = "public String marker() { return \"ioc\"; }",
             ),
@@ -114,10 +121,10 @@ internal class FunctionalTestProject(private val rootDir: Path) {
 
     private fun writeMockTaboolibBuild() {
         val baseDir = rootDir.resolve("build-logic/mock-taboolib")
-        writeFile(baseDir.resolve("settings.gradle.kts"), "rootProject.name = \"mock-taboolib\"")
-        writeFile(baseDir.resolve("build.gradle.kts"), mockTaboolibBuildScript())
+        writeFile(baseDir.resolve("settings.gradle"), "rootProject.name = 'mock-taboolib'")
+        writeFile(baseDir.resolve("build.gradle"), mockTaboolibBuildScript())
         writeFile(
-            baseDir.resolve("src/main/kotlin/io/izzel/taboolib/mock/MockTabooLibPlugin.kt"),
+            baseDir.resolve("src/main/java/io/izzel/taboolib/mock/MockTabooLibPlugin.java"),
             mockTaboolibPluginSource(),
         )
     }
@@ -172,7 +179,7 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             if (options.applyMockTaboolib) {
                 appendLine("    id 'io.izzel.taboolib'")
             }
-            appendLine("    id 'top.wcpe.taboolib.ioc.properties'")
+            appendLine("    id 'top.wcpe.taboolib.ioc'")
             appendLine("}")
             if (options.consumerGroup != null) {
                 appendLine("group = '${options.consumerGroup}'")
@@ -182,7 +189,7 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             if (options.applyMockTaboolib) {
                 appendLine("taboolib {")
                 if (options.manualRelocationTarget != null) {
-                    appendLine("    relocate 'top.wcpe.taboolib.ioc.properties', '${options.manualRelocationTarget}'")
+                    appendLine("    relocate 'top.wcpe.taboolib.ioc', '${options.manualRelocationTarget}'")
                 }
                 if (options.taboolibSubproject) {
                     appendLine("    subproject = true")
@@ -212,7 +219,7 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             if (options.applyMockTaboolib) {
                 appendLine("    id(\"io.izzel.taboolib\")")
             }
-            appendLine("    id(\"top.wcpe.taboolib.ioc.properties\")")
+            appendLine("    id(\"top.wcpe.taboolib.ioc\")")
             appendLine("}")
             if (options.consumerGroup != null) {
                 appendLine("group = \"${options.consumerGroup}\"")
@@ -222,7 +229,7 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             if (options.applyMockTaboolib) {
                 appendLine("taboolib {")
                 if (options.manualRelocationTarget != null) {
-                    appendLine("    relocate(\"top.wcpe.taboolib.ioc.properties\", \"${options.manualRelocationTarget}\")")
+                    appendLine("    relocate(\"top.wcpe.taboolib.ioc\", \"${options.manualRelocationTarget}\")")
                 }
                 if (options.taboolibSubproject) {
                     appendLine("    subproject = true")
@@ -256,8 +263,7 @@ internal class FunctionalTestProject(private val rootDir: Path) {
     private fun mockTaboolibBuildScript(): String {
         return """
             plugins {
-                kotlin("jvm") version "1.9.25"
-                `java-gradle-plugin`
+                id 'java-gradle-plugin'
             }
 
             repositories {
@@ -266,20 +272,20 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             }
 
             dependencies {
-                implementation(kotlin("stdlib"))
+                implementation gradleApi()
             }
 
             java {
                 toolchain {
-                    languageVersion.set(JavaLanguageVersion.of(17))
+                    languageVersion = JavaLanguageVersion.of(17)
                 }
             }
 
             gradlePlugin {
                 plugins {
-                    create("mockTaboolib") {
-                        id = "io.izzel.taboolib"
-                        implementationClass = "io.izzel.taboolib.mock.MockTabooLibPlugin"
+                    mockTaboolib {
+                        id = 'io.izzel.taboolib'
+                        implementationClass = 'io.izzel.taboolib.mock.MockTabooLibPlugin'
                     }
                 }
             }
@@ -288,128 +294,155 @@ internal class FunctionalTestProject(private val rootDir: Path) {
 
     private fun mockTaboolibPluginSource(): String {
         return """
-            package io.izzel.taboolib.mock
+            package io.izzel.taboolib.mock;
 
-            import java.io.FileOutputStream
-            import java.util.jar.JarEntry
-            import java.util.jar.JarFile
-            import java.util.jar.JarOutputStream
-            import org.gradle.api.Action
-            import org.gradle.api.DefaultTask
-            import org.gradle.api.Plugin
-            import org.gradle.api.Project
-            import org.gradle.api.file.DuplicatesStrategy
-            import org.gradle.api.provider.MapProperty
-            import org.gradle.api.tasks.Input
-            import org.gradle.api.tasks.InputFile
-            import org.gradle.api.tasks.Optional
-            import org.gradle.api.tasks.OutputFile
-            import org.gradle.api.tasks.TaskAction
-            import org.gradle.jvm.tasks.Jar
-            import org.gradle.work.DisableCachingByDefault
+            import java.io.File;
+            import java.io.FileOutputStream;
+            import java.io.IOException;
+            import java.nio.file.Files;
+            import java.nio.file.StandardCopyOption;
+            import java.util.LinkedHashMap;
+            import java.util.LinkedHashSet;
+            import java.util.Map;
+            import java.util.jar.JarEntry;
+            import java.util.jar.JarFile;
+            import java.util.jar.JarOutputStream;
+            import org.gradle.api.Action;
+            import org.gradle.api.DefaultTask;
+            import org.gradle.api.Plugin;
+            import org.gradle.api.Project;
+            import org.gradle.api.artifacts.Configuration;
+            import org.gradle.api.file.DuplicatesStrategy;
+            import org.gradle.api.file.RegularFileProperty;
+            import org.gradle.api.provider.MapProperty;
+            import org.gradle.api.tasks.Input;
+            import org.gradle.api.tasks.InputFile;
+            import org.gradle.api.tasks.OutputFile;
+            import org.gradle.api.tasks.TaskAction;
+            import org.gradle.jvm.tasks.Jar;
+            import org.gradle.work.DisableCachingByDefault;
 
-            open class MockTaboolibEnv {
-                var group: String? = null
-            }
+            public class MockTabooLibPlugin implements Plugin<Project> {
 
-            open class MockTaboolibExtension {
-                val relocation: MutableMap<String, String> = linkedMapOf()
-                val env: MockTaboolibEnv = MockTaboolibEnv()
-                var subproject: Boolean = false
+                public static class MockTaboolibEnv {
 
-                fun relocate(prefix: String, target: String) {
-                    relocation[prefix] = target
+                    private String group;
+
+                    public String getGroup() {
+                        return group;
+                    }
+
+                    public void setGroup(String group) {
+                        this.group = group;
+                    }
                 }
 
-                fun env(action: Action<MockTaboolibEnv>) {
-                    action.execute(env)
+                public static class MockTaboolibExtension {
+
+                    private final Map<String, String> relocation = new LinkedHashMap<>();
+                    private final MockTaboolibEnv env = new MockTaboolibEnv();
+                    private boolean subproject;
+
+                    public Map<String, String> getRelocation() {
+                        return relocation;
+                    }
+
+                    public MockTaboolibEnv getEnv() {
+                        return env;
+                    }
+
+                    public boolean isSubproject() {
+                        return subproject;
+                    }
+
+                    public void setSubproject(boolean subproject) {
+                        this.subproject = subproject;
+                    }
+
+                    public void relocate(String prefix, String target) {
+                        relocation.put(prefix, target);
+                    }
+
+                    public void env(Action<? super MockTaboolibEnv> action) {
+                        action.execute(env);
+                    }
                 }
-            }
 
-            @DisableCachingByDefault(because = "Functional test fixture task")
-            abstract class MockTaboolibMainTask : DefaultTask() {
+                @DisableCachingByDefault(because = "Functional test fixture task")
+                public abstract static class MockTaboolibMainTask extends DefaultTask {
 
-                @get:InputFile
-                abstract val inputJar: org.gradle.api.file.RegularFileProperty
+                    @InputFile
+                    public abstract RegularFileProperty getInputJar();
 
-                @get:OutputFile
-                abstract val outputJar: org.gradle.api.file.RegularFileProperty
+                    @OutputFile
+                    public abstract RegularFileProperty getOutputJar();
 
-                @get:Input
-                abstract val relocations: MapProperty<String, String>
+                    @Input
+                    public abstract MapProperty<String, String> getRelocations();
 
-                @TaskAction
-                fun rewrite() {
-                    val input = inputJar.get().asFile
-                    val output = outputJar.get().asFile
-                    val tempFile = kotlin.io.path.createTempFile(prefix = output.nameWithoutExtension, suffix = ".jar").toFile()
+                    @TaskAction
+                    public void rewrite() throws IOException {
+                        File input = getInputJar().get().getAsFile();
+                        File output = getOutputJar().get().getAsFile();
+                        File tempFile = File.createTempFile(output.getName().replace('.', '_'), ".jar");
 
-                    JarFile(input).use { sourceJar ->
-                        JarOutputStream(FileOutputStream(tempFile)).use { targetJar ->
-                            val written = linkedSetOf<String>()
-                            sourceJar.entries().asSequence().forEach { entry ->
-                                val mappedName = mapEntry(entry.name)
-                                if (written.add(mappedName)) {
-                                    targetJar.putNextEntry(JarEntry(mappedName))
-                                    if (!entry.isDirectory) {
-                                        sourceJar.getInputStream(entry).use { inputStream ->
-                                            inputStream.copyTo(targetJar)
-                                        }
-                                    }
-                                    targetJar.closeEntry()
+                        try (JarFile sourceJar = new JarFile(input); JarOutputStream targetJar = new JarOutputStream(new FileOutputStream(tempFile))) {
+                            LinkedHashSet<String> written = new LinkedHashSet<>();
+                            var entries = sourceJar.entries();
+                            while (entries.hasMoreElements()) {
+                                JarEntry entry = entries.nextElement();
+                                String mappedName = mapEntry(entry.getName());
+                                if (!written.add(mappedName)) {
+                                    continue;
                                 }
+                                targetJar.putNextEntry(new JarEntry(mappedName));
+                                if (!entry.isDirectory()) {
+                                    try (var inputStream = sourceJar.getInputStream(entry)) {
+                                        inputStream.transferTo(targetJar);
+                                    }
+                                }
+                                targetJar.closeEntry();
                             }
                         }
+
+                        Files.copy(tempFile.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                        tempFile.delete();
                     }
 
-                    tempFile.copyTo(output, overwrite = true)
-                    tempFile.delete()
+                    private String mapEntry(String path) {
+                        String mapped = path;
+                        for (Map.Entry<String, String> relocation : getRelocations().get().entrySet()) {
+                            String fromPath = relocation.getKey().replace('.', '/');
+                            String toPath = relocation.getValue().replace('.', '/');
+                            if (mapped.startsWith(fromPath)) {
+                                mapped = toPath + mapped.substring(fromPath.length());
+                            }
+                        }
+                        return mapped;
+                    }
                 }
 
-                private fun mapEntry(path: String): String {
-                    var mapped = path
-                    relocations.get().entries.forEach { (from, to) ->
-                        val fromPath = from.replace('.', '/')
-                        val toPath = to.replace('.', '/')
-                        if (mapped.startsWith(fromPath)) {
-                            mapped = toPath + mapped.removePrefix(fromPath)
-                        }
-                    }
-                    return mapped
-                }
-            }
+                @Override
+                public void apply(Project project) {
+                    MockTaboolibExtension extension = project.getExtensions().create("taboolib", MockTaboolibExtension.class);
+                    Configuration taboo = project.getConfigurations().maybeCreate("taboo");
+                    project.getConfigurations().maybeCreate("include");
+                    var mainTask = project.getTasks().register("taboolibMainTask", MockTaboolibMainTask.class, task -> task.setGroup("taboolib"));
 
-            class MockTabooLibPlugin : Plugin<Project> {
-
-                override fun apply(project: Project) {
-                    val extension = project.extensions.create("taboolib", MockTaboolibExtension::class.java)
-                    val taboo = project.configurations.maybeCreate("taboo")
-                    project.configurations.maybeCreate("include")
-                    val mainTask = project.tasks.register("taboolibMainTask", MockTaboolibMainTask::class.java) {
-                        it.group = "taboolib"
-                    }
-
-                    project.afterEvaluate {
-                        val packagedDependencies = taboo.files
-                        val jarTask = project.tasks.named("jar", Jar::class.java)
-                        jarTask.configure { jar ->
-                            jar.from(packagedDependencies.map { dependency ->
-                                if (dependency.isDirectory) {
-                                    dependency
-                                } else {
-                                    project.zipTree(dependency)
-                                }
-                            })
-                            jar.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-                            jar.finalizedBy(mainTask)
-                        }
-
-                        mainTask.configure { task ->
-                            task.inputJar.set(jarTask.flatMap { it.archiveFile })
-                            task.outputJar.set(jarTask.flatMap { it.archiveFile })
-                            task.relocations.set(extension.relocation.toMap())
-                        }
-                    }
+                    project.afterEvaluate(ignored -> {
+                        var packagedDependencies = taboo.getFiles();
+                        var jarTask = project.getTasks().named("jar", Jar.class);
+                        jarTask.configure(jar -> {
+                            jar.from(packagedDependencies.stream().map(dependency -> dependency.isDirectory() ? dependency : project.zipTree(dependency)).toList());
+                            jar.setDuplicatesStrategy(DuplicatesStrategy.EXCLUDE);
+                            jar.finalizedBy(mainTask);
+                        });
+                        mainTask.configure(task -> {
+                            task.getInputJar().set(jarTask.flatMap(jar -> jar.getArchiveFile()));
+                            task.getOutputJar().set(jarTask.flatMap(jar -> jar.getArchiveFile()));
+                            task.getRelocations().set(extension.getRelocation());
+                        });
+                    });
                 }
             }
         """

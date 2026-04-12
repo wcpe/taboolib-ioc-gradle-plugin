@@ -40,7 +40,7 @@ class TaboolibIocPluginFunctionalTest {
 
         assertContains(result.output, "[taboolibIocDoctor] dependency = project(:ioc-lib)")
         assertContains(result.output, "[taboolibIocDoctor] configured = true")
-        assertContains(result.output, "top.wcpe.taboolib.ioc.properties -> com.example.root.ioc")
+        assertContains(result.output, "top.wcpe.taboolib.ioc -> com.example.root.ioc")
     }
 
     @Test
@@ -239,8 +239,9 @@ class TaboolibIocPluginFunctionalTest {
 
         val result = project.build(":consumer:taboolibIocDoctor")
 
-        assertContains(result.output, "[taboolibIocDoctor] dependency = top.wcpe.taboolib.ioc.properties:taboolib-ioc:9.9.9")
-        assertContains(result.output, "top.wcpe.taboolib.ioc.properties -> com.example.kotlin.ioc")
+        assertContains(result.output, "[taboolibIocDoctor] dependency = top.wcpe.taboolib.ioc:taboolib-ioc:9.9.9")
+        assertContains(result.output, "[taboolibIocDoctor] testDependency = top.wcpe.taboolib.ioc:taboolib-ioc-test:9.9.9")
+        assertContains(result.output, "top.wcpe.taboolib.ioc -> com.example.kotlin.ioc")
     }
 
     @Test

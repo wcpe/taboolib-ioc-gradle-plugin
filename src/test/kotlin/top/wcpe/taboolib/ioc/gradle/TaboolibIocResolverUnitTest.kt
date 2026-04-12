@@ -31,7 +31,7 @@ class TaboolibIocResolverUnitTest {
         assertEquals("taboolibIoc.targetPackage", resolved.targetPackage.source)
         assertEquals("com.example.explicit.ioc", resolved.targetPackage.relocationTarget)
         assertEquals(
-            ModuleDependencySpec("top.wcpe.taboolib.ioc.properties", "taboolib-ioc", "1.2.3"),
+            ModuleDependencySpec("top.wcpe.taboolib.ioc", "taboolib-ioc", "1.2.3"),
             resolved.dependencySpec,
         )
     }
@@ -138,6 +138,39 @@ class TaboolibIocResolverUnitTest {
     }
 
     @Test
+    fun resolveOfficialDependencyProvidesOfficialTestModule() {
+        val project: Project = buildProject("resolver-test-module")
+        project.group = "com.example.project"
+        val extension = createExtension(project).apply {
+            iocVersion.set("9.9.9")
+        }
+        val resolver = TaboolibIocResolver(project, extension)
+        val resolved = resolver.resolve()
+
+        assertEquals(
+            ModuleDependencySpec(
+                TaboolibIocResolver.DEFAULT_IOC_GROUP,
+                TaboolibIocResolver.DEFAULT_IOC_TEST_ARTIFACT,
+                "9.9.9",
+            ),
+            resolver.resolveTestDependencySpec(resolved.dependencySpec),
+        )
+    }
+
+    @Test
+    fun resolveCustomDependencyDoesNotGuessTestModule() {
+        val project: Project = buildProject("resolver-custom-test-module")
+        project.group = "com.example.project"
+        val extension = createExtension(project).apply {
+            dependency("com.example:demo:2.0.0")
+        }
+        val resolver = TaboolibIocResolver(project, extension)
+        val resolved = resolver.resolve()
+
+        assertEquals(null, resolver.resolveTestDependencySpec(resolved.dependencySpec))
+    }
+
+    @Test
     fun readsExistingRelocationsAndSubprojectFlagFromTaboolibExtension() {
         val project = buildProject("resolver-taboolib-state")
         val extension = createExtension(project)
@@ -145,14 +178,14 @@ class TaboolibIocResolverUnitTest {
             "taboolib",
             FakeTaboolibExtension(
                 subproject = true,
-                relocation = linkedMapOf("top.wcpe.taboolib.ioc.properties" to "com.example.demo.ioc"),
+                relocation = linkedMapOf("top.wcpe.taboolib.ioc" to "com.example.demo.ioc"),
             ),
         )
         val resolver = TaboolibIocResolver(project, extension)
 
         assertTrue(resolver.isTaboolibSubproject())
         assertEquals(
-            mapOf("top.wcpe.taboolib.ioc.properties" to "com.example.demo.ioc"),
+            mapOf("top.wcpe.taboolib.ioc" to "com.example.demo.ioc"),
             resolver.readExistingRelocations(),
         )
     }
@@ -178,7 +211,7 @@ class TaboolibIocResolverUnitTest {
         return project.extensions.create("taboolibIoc", TaboolibIocExtension::class.java).apply {
             autoTakeover.set(true)
             backend.set(PackagingBackendId.TABOOLIB)
-            iocVersion.set("1.0.0-SNAPSHOT")
+            iocVersion.set(TaboolibIocResolver.DEFAULT_IOC_VERSION)
         }
     }
 

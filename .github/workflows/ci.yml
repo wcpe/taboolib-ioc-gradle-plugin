@@ -9,6 +9,8 @@ on:
 jobs:
   verify:
     runs-on: windows-latest
+    env:
+      EXAMPLE_LOCAL_MAVEN_REPO: ${{ github.workspace }}\example\.m2-local
 
     steps:
       - name: Checkout
@@ -24,25 +26,23 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build root project
-        run: .\gradlew.bat build
+        run: .\gradlew.bat --no-daemon build
 
-      - name: Publish example ioc-lib to isolated mavenLocal
+      - name: Publish current plugin to isolated mavenLocal
         shell: pwsh
         run: |
-          $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
-          .\gradlew.bat -p example :ioc-lib:publishToMavenLocal -Pexample.modules=ioc-lib "-Dmaven.repo.local=$exampleLocalRepo"
+          Remove-Item -Recurse -Force $env:EXAMPLE_LOCAL_MAVEN_REPO -ErrorAction SilentlyContinue
+          .\gradlew.bat --no-daemon publishToMavenLocal "-Dmaven.repo.local=$env:EXAMPLE_LOCAL_MAVEN_REPO"
 
       - name: Build Groovy DSL example
         shell: pwsh
         run: |
-          $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
-          .\gradlew.bat -p example :groovy-consumer:build -Pexample.modules=groovy-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
+          .\gradlew.bat --no-daemon -p example :groovy-consumer:build "-Dmaven.repo.local=$env:EXAMPLE_LOCAL_MAVEN_REPO" --refresh-dependencies
 
       - name: Build Kotlin DSL example
         shell: pwsh
         run: |
-          $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
-          .\gradlew.bat -p example :kotlin-consumer:build -Pexample.modules=kotlin-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
+          .\gradlew.bat --no-daemon -p example :kotlin-consumer:build "-Dmaven.repo.local=$env:EXAMPLE_LOCAL_MAVEN_REPO" --refresh-dependencies
 
       - name: Upload test and coverage reports
         if: always()

@@ -108,6 +108,19 @@ internal object TabooLibBackend : PackagingBackend {
         }
     }
 
+    internal fun ensureTestDependency(
+        project: Project,
+        testImplementationConfiguration: org.gradle.api.artifacts.Configuration,
+        dependencySpec: ModuleDependencySpec,
+    ) {
+        if (hasSameDependency(testImplementationConfiguration, dependencySpec)) {
+            return
+        }
+
+        detectTestModuleDependencyConflict(testImplementationConfiguration, dependencySpec)
+        project.dependencies.add(testImplementationConfiguration.name, dependencySpec.displayName)
+    }
+
     private fun ensureRelocation(
         taboolibExtension: Any,
         resolver: TaboolibIocResolver,
@@ -172,6 +185,20 @@ internal object TabooLibBackend : PackagingBackend {
         if (conflict != null) {
             throw TaboolibIocConfigurationException(
                 "检测到多个 IoC project 依赖来源：已存在 ${conflict.dependencyProject.path}，自动接管想要注入 ${dependencySpec.path}。请保留一个本地联调项目。",
+            )
+        }
+    }
+
+    private fun detectTestModuleDependencyConflict(
+        configuration: org.gradle.api.artifacts.Configuration,
+        dependencySpec: ModuleDependencySpec,
+    ) {
+        val conflict = configuration.dependencies.filterIsInstance<ExternalDependency>().firstOrNull {
+            it.group == dependencySpec.group && it.name == dependencySpec.name && it.version != dependencySpec.version
+        }
+        if (conflict != null) {
+            throw TaboolibIocConfigurationException(
+                "检测到重复的 IoC 测试模块依赖：已存在 ${conflict.group}:${conflict.name}:${conflict.version}，自动接管想要注入 ${dependencySpec.displayName}。请保留一种版本来源。",
             )
         }
     }

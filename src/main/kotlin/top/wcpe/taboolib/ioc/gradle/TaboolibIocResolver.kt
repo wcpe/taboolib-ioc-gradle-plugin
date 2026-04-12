@@ -119,6 +119,14 @@ internal class TaboolibIocResolver(
         return ModuleDependencySpec(DEFAULT_IOC_GROUP, DEFAULT_IOC_ARTIFACT, version)
     }
 
+    fun resolveTestDependencySpec(dependencySpec: IocDependencySpec = resolveDependencySpec()): ModuleDependencySpec? {
+        val moduleDependency = dependencySpec as? ModuleDependencySpec ?: return null
+        if (moduleDependency.group != DEFAULT_IOC_GROUP || moduleDependency.name != DEFAULT_IOC_ARTIFACT) {
+            return null
+        }
+        return ModuleDependencySpec(moduleDependency.group, DEFAULT_IOC_TEST_ARTIFACT, moduleDependency.version)
+    }
+
     private fun validatePackageName(value: String): String {
         if (!PACKAGE_REGEX.matches(value)) {
             throw TaboolibIocConfigurationException(
@@ -130,10 +138,11 @@ internal class TaboolibIocResolver(
 
     internal companion object {
         const val DEFAULT_IOC_ARTIFACT = "taboolib-ioc"
-        const val DEFAULT_IOC_GROUP = "top.wcpe.taboolib.ioc.properties"
-        const val DEFAULT_IOC_VERSION = "1.0.0-SNAPSHOT"
+        const val DEFAULT_IOC_TEST_ARTIFACT = "taboolib-ioc-test"
+        const val DEFAULT_IOC_GROUP = "top.wcpe.taboolib.ioc"
+        const val DEFAULT_IOC_VERSION = "1.2.0-SNAPSHOT"
         const val IOC_VERSION_PROPERTY = "taboolib.ioc.version"
-        const val SOURCE_PACKAGE = "top.wcpe.taboolib.ioc.properties"
+        const val SOURCE_PACKAGE = "top.wcpe.taboolib.ioc"
         const val TABOO_CONFIGURATION_NAME = "taboo"
         const val TABOOLIB_ENV_GROUP_PROPERTY = "taboolib.env.group"
         const val TABOOLIB_EXTENSION_NAME = "taboolib"
