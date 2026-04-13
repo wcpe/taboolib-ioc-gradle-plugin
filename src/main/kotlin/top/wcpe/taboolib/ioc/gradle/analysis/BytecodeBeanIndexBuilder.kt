@@ -179,7 +179,7 @@ internal object BytecodeBeanIndexBuilder {
         URLClassLoader(urls, BytecodeBeanIndexBuilder::class.java.classLoader).use { classLoader ->
             val updatedClassIndex = index.classIndex.map { entry ->
                 loadClass(entry.className, classLoader)?.let { clazz ->
-                    entry.copy(genericSuperTypes = collectGenericSuperTypes(clazz))
+                    entry.copy(genericSuperTypes = safelyResolveMetadata(emptyList()) { collectGenericSuperTypes(clazz) })
                 } ?: entry
             }
             val updatedBeans = index.beanIndex.map { bean -> enrichBeanDefinition(bean, classLoader) }
@@ -197,7 +197,9 @@ internal object BytecodeBeanIndexBuilder {
     }
 
     private fun loadClass(className: String, classLoader: ClassLoader): Class<*>? {
-        return runCatching { Class.forName(className, false, classLoader) }.getOrNull()
+        return safelyResolveMetadata<Class<*>?>(null) {
+            Class.forName(className, false, classLoader)
+        }
     }
 
     private fun collectGenericSuperTypes(clazz: Class<*>): List<String> {
@@ -217,32 +219,49 @@ internal object BytecodeBeanIndexBuilder {
             return bean
         }
         val ownerClass = loadClass(bean.ownerClassName, classLoader) ?: return bean
-        val method = ownerClass.declaredMethods.firstOrNull {
-            it.name == bean.declarationName && it.returnType.name == bean.exposedType
-        } ?: return bean
-        return bean.copy(exposedGenericType = normalizeTypeName(method.genericReturnType.typeName))
+        val genericType = safelyResolveMetadata<String?>(null) {
+            val method = ownerClass.declaredMethods.firstOrNull {
+                it.name == bean.declarationName && it.returnType.name == bean.exposedType
+            } ?: return@safelyResolveMetadata null
+            method.genericReturnType.typeName
+        }
+        return bean.copy(exposedGenericType = genericType?.let(::normalizeTypeName))
     }
 
     private fun enrichInjectionPoint(injection: InjectionPointDefinition, classLoader: ClassLoader): InjectionPointDefinition {
         val ownerClass = loadClass(injection.ownerClassName, classLoader) ?: return injection
-        val genericType = when (injection.kind) {
-            InjectionPointKind.FIELD -> ownerClass.declaredFields.firstOrNull {
-                it.name == injection.declarationName
-            }?.genericType?.typeName
+        val genericType = safelyResolveMetadata<String?>(null) {
+            when (injection.kind) {
+                InjectionPointKind.FIELD -> ownerClass.declaredFields.firstOrNull {
+                    it.name == injection.declarationName
+                }?.genericType?.typeName
 
-            InjectionPointKind.CONSTRUCTOR_PARAMETER -> ownerClass.declaredConstructors.firstOrNull { constructor ->
-                val parameterIndex = injection.parameterIndex ?: return@firstOrNull false
-                parameterIndex in constructor.parameterTypes.indices && constructor.parameterTypes[parameterIndex].name == injection.dependencyType
-            }?.genericParameterTypes?.getOrNull(injection.parameterIndex ?: -1)?.typeName
+                InjectionPointKind.CONSTRUCTOR_PARAMETER -> ownerClass.declaredConstructors.firstOrNull { constructor ->
+                    val parameterIndex = injection.parameterIndex ?: return@firstOrNull false
+                    parameterIndex in constructor.parameterTypes.indices && constructor.parameterTypes[parameterIndex].name == injection.dependencyType
+                }?.genericParameterTypes?.getOrNull(injection.parameterIndex ?: -1)?.typeName
 
-            InjectionPointKind.METHOD_PARAMETER -> ownerClass.declaredMethods.firstOrNull { method ->
-                val parameterIndex = injection.parameterIndex ?: return@firstOrNull false
-                method.name == injection.declarationName &&
-                    parameterIndex in method.parameterTypes.indices &&
-                    method.parameterTypes[parameterIndex].name == injection.dependencyType
-            }?.genericParameterTypes?.getOrNull(injection.parameterIndex ?: -1)?.typeName
+                InjectionPointKind.METHOD_PARAMETER -> ownerClass.declaredMethods.firstOrNull { method ->
+                    val parameterIndex = injection.parameterIndex ?: return@firstOrNull false
+                    method.name == injection.declarationName &&
+                        parameterIndex in method.parameterTypes.indices &&
+                        method.parameterTypes[parameterIndex].name == injection.dependencyType
+                }?.genericParameterTypes?.getOrNull(injection.parameterIndex ?: -1)?.typeName
+            }
         }
         return injection.copy(dependencyGenericType = genericType?.let(::normalizeTypeName))
+    }
+
+    private fun <T> safelyResolveMetadata(defaultValue: T, block: () -> T): T {
+        return try {
+            block()
+        } catch (_: LinkageError) {
+            defaultValue
+        } catch (_: TypeNotPresentException) {
+            defaultValue
+        } catch (_: java.lang.reflect.MalformedParameterizedTypeException) {
+            defaultValue
+        }
     }
 
     private fun normalizeTypeName(typeName: String): String {

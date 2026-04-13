@@ -158,8 +158,10 @@ class TaboolibIocPlugin : Plugin<Project> {
             val mainSourceSet = javaExtension.sourceSets.findByName("main") ?: return@withPlugin
             taskProvider.configure { task ->
                 task.classDirectories.from(mainSourceSet.output.classesDirs)
+                task.dependencyArtifacts.from(mainSourceSet.compileClasspath)
                 task.sourceDirectories.from(mainSourceSet.allSource.srcDirs)
                 task.dependsOn(project.tasks.named(mainSourceSet.classesTaskName))
+                task.dependsOn(mainSourceSet.compileClasspath)
             }
             project.tasks.named(LifecycleBasePlugin.CHECK_TASK_NAME).configure { task ->
                 task.dependsOn(taskProvider)
