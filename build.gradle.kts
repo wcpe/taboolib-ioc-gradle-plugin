@@ -55,8 +55,8 @@ publishing {
         mavenLocal()
         maven {
             credentials {
-                username = project.findProperty("username").toString()
-                password = project.findProperty("password").toString()
+                username = findProperty("username").toString()
+                password = findProperty("password").toString()
             }
             authentication {
                 create<BasicAuthentication>("basic")
