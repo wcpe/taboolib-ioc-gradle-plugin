@@ -1,0 +1,11 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+        mavenLocal()
+        maven { url = uri('https://maven.wcpe.top/repository/maven-public/') }
+        maven { url = uri('https://repo.tabooproject.org/repository/releases/') }
+    }
+}
+
+rootProject.name = 'static-diagnosis-plugin-fixture'

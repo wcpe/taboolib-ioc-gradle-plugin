@@ -1,0 +1,54 @@
+plugins {
+    id 'java'
+    id 'org.jetbrains.kotlin.jvm' version '1.9.25'
+    id 'io.izzel.taboolib' version '2.0.36'
+    id 'top.wcpe.taboolib.ioc'
+    id 'xyz.jpenilla.run-paper' version '2.3.1'
+}
+
+group = 'fixture.server.plugin'
+version = '1.0.0'
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = uri('https://maven.wcpe.top/repository/maven-public/') }
+    maven { url = uri('https://repo.tabooproject.org/repository/releases/') }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    compileOnly 'top.wcpe.taboolib.ioc:taboolib-ioc:1.2.0-SNAPSHOT'
+}
+
+taboolib {
+    description {
+        name('IocServerIntegrationTest')
+        desc('Taboolib IoC server integration test fixture')
+        contributors {
+            name('WCPE')
+        }
+    }
+    env {
+        install 'common', 'common-env', 'common-util', 'common-platform-api', 'common-reflex', 'platform-bukkit'
+        group = 'fixture.server.plugin'
+    }
+    version { taboolib = '6.3.0-88720d8' }
+}
+
+taboolibIoc {
+    autoTakeover = true
+    targetPackage = 'fixture.server.plugin'
+    analysisFailOnError = true
+    analysisFailOnWarning = false
+}
+
+tasks.runServer {
+    minecraftVersion('1.20.4')
+    jvmArgs('-Dcom.mojang.eula.agree=true')
+}

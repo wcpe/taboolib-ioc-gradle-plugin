@@ -1,0 +1,41 @@
+plugins {
+    id 'java'
+    id 'org.jetbrains.kotlin.jvm' version '1.9.25'
+    id 'io.izzel.taboolib' version '2.0.36'
+    id 'top.wcpe.taboolib.ioc'
+}
+
+group = 'fixture.forbidden'
+version = '1.0.0'
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = uri('https://maven.wcpe.top/repository/maven-public/') }
+    maven { url = uri('https://repo.tabooproject.org/repository/releases/') }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    compileOnly 'top.wcpe.taboolib.ioc:taboolib-ioc:1.2.0-SNAPSHOT'
+}
+
+taboolib {
+    env {
+        install 'common', 'common-env', 'common-util', 'common-platform-api', 'common-reflex', 'platform-bukkit'
+        group = 'fixture.forbidden'
+    }
+    version { taboolib = '6.3.0-88720d8' }
+}
+
+taboolibIoc {
+    autoTakeover = true
+    targetPackage = 'fixture.forbidden'
+    analysisFailOnError = false
+    analysisFailOnWarning = false
+}
