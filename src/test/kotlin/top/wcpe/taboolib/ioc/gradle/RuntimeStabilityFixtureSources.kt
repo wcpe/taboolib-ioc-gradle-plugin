@@ -9,7 +9,7 @@ import kotlin.test.assertNotNull
 
 internal object RuntimeStabilityFixtureSources {
 
-    fun multipleConstructorsWithoutInject(): Map<String, String> {
+    fun multipleConstructorsWithNoArgFallback(): Map<String, String> {
         return baseAnnotations() + mapOf(
             "fixture/runtime/MultiConstructorBean.java" to """
                 package fixture.runtime;
@@ -51,7 +51,7 @@ internal object RuntimeStabilityFixtureSources {
         )
     }
 
-    fun kotlinNonNullParametersWithoutInject(): Map<String, String> {
+    fun kotlinMultiConstructorsWithNoArgFallback(): Map<String, String> {
         return baseAnnotations() + mapOf(
             "fixture/runtime/KotlinMultiConstructorBean.java" to """
                 package fixture.runtime;

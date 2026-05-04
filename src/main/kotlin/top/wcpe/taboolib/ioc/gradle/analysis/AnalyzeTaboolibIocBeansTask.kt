@@ -109,6 +109,8 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
 
             DiagnosticSeverity.WARNING ->
                 "如需只生成报告而不拦截 warning，请显式配置 taboolibIoc { analysisFailOnWarning = false } 或 -P \"taboolib.ioc.analysis.fail-on-warning=false\"。"
+
+            DiagnosticSeverity.INFO -> ""
         }
         return listOf(
             "静态诊断发现 ${matchingDiagnostics.size} 个 ${severity.name.lowercase()}，$gateName=true，已中断构建。",
@@ -126,6 +128,7 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
             when (diagnostic.severity) {
                 DiagnosticSeverity.ERROR -> logger.error(rendered)
                 DiagnosticSeverity.WARNING -> logger.warn(rendered)
+                DiagnosticSeverity.INFO -> logger.info(rendered)
             }
         }
     }

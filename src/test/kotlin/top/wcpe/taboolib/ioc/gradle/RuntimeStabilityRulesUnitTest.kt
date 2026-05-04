@@ -15,8 +15,8 @@ class RuntimeStabilityRulesUnitTest {
     lateinit var tempDir: Path
 
     @Test
-    fun detectsBeanWithMultipleConstructorsWithoutExplicitInject() {
-        val sources = RuntimeStabilityFixtureSources.multipleConstructorsWithoutInject()
+    fun ignoresMultipleConstructorsWhenRuntimeWillFallbackToNoArg() {
+        val sources = RuntimeStabilityFixtureSources.multipleConstructorsWithNoArgFallback()
         val classesDir = RuntimeStabilityFixtureSources.compileJavaSources(tempDir, sources)
         val index = BytecodeBeanIndexBuilder.build(listOf(classesDir), listOf(tempDir.resolve("src")))
         val report = StaticDiagnosisEngine.analyze(
@@ -25,12 +25,10 @@ class RuntimeStabilityRulesUnitTest {
             projectProperties = emptyMap(),
         )
 
-        val warning = report.diagnostics.single {
+        val constructorWarnings = report.diagnostics.filter {
             it.rule == "bean-constructor-not-explicitly-injected"
         }
-        assertEquals(DiagnosticSeverity.WARNING, warning.severity)
-        assertTrue(warning.ownerClassName.endsWith("MultiConstructorBean"))
-        assertTrue(warning.message.contains("未显式标注 @Inject constructor"))
+        assertTrue(constructorWarnings.isEmpty(), "运行时会回退到无参构造时不应触发 constructor-not-explicitly-injected 警告")
     }
 
     @Test
@@ -51,8 +49,8 @@ class RuntimeStabilityRulesUnitTest {
     }
 
     @Test
-    fun detectsKotlinNonNullParametersWithoutExplicitInject() {
-        val sources = RuntimeStabilityFixtureSources.kotlinNonNullParametersWithoutInject()
+    fun ignoresKotlinNonNullParametersWhenRuntimeWillFallbackToNoArg() {
+        val sources = RuntimeStabilityFixtureSources.kotlinMultiConstructorsWithNoArgFallback()
         val classesDir = RuntimeStabilityFixtureSources.compileJavaSources(tempDir, sources)
         val index = BytecodeBeanIndexBuilder.build(listOf(classesDir), listOf(tempDir.resolve("src")))
         val report = StaticDiagnosisEngine.analyze(
@@ -61,12 +59,10 @@ class RuntimeStabilityRulesUnitTest {
             projectProperties = emptyMap(),
         )
 
-        val error = report.diagnostics.single {
+        val runtimeErrors = report.diagnostics.filter {
             it.rule == "bean-runtime-null-injection-risk"
         }
-        assertEquals(DiagnosticSeverity.ERROR, error.severity)
-        assertTrue(error.ownerClassName.endsWith("KotlinMultiConstructorBean"))
-        assertTrue(error.message.contains("Kotlin 非空构造参数"))
+        assertTrue(runtimeErrors.isEmpty(), "运行时会回退到无参构造时不应触发 runtime-null-injection-risk")
     }
 
     @Test
