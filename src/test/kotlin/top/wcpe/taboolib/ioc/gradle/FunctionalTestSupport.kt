@@ -81,6 +81,11 @@ internal class FunctionalTestProject(private val rootDir: Path) {
         return rootDir.resolve(relativePath).readText()
     }
 
+    fun writeSourceFile(relativePath: String, content: String): FunctionalTestProject {
+        writeFile(rootDir.resolve(relativePath), content)
+        return this
+    }
+
     private fun writeConsumerProject(options: FixtureOptions) {
         val buildScriptName = if (options.useKotlinDslConsumer) "build.gradle.kts" else "build.gradle"
         writeFile(rootDir.resolve("consumer/$buildScriptName"), consumerBuildScript(options))

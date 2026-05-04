@@ -150,7 +150,96 @@ class StaticDiagnosisEngineUnitTest {
         assertEquals("com.example.RequestContext", diag.ownerClassName)
     }
 
-    private fun makeBean(beanName: String, className: String, scope: String? = null) = BeanDefinition(
+
+    @Test
+    fun detectsMultiplePrimaryBeans() {
+        val beanA = makeBean("beanA", "com.example.ServiceA", primary = true)
+        val beanB = makeBean("beanB", "com.example.ServiceA", primary = true)
+        val ip = makeInjectionPoint("com.example.Consumer", "svc", "com.example.ServiceA", InjectionPointKind.FIELD)
+        val index = BytecodeAnalysisIndex(
+            classIndex = emptyList(),
+            beanIndex = listOf(beanA, beanB),
+            injectionPointIndex = listOf(ip),
+            missingInjectCandidateIndex = emptyList(),
+            componentBeanTypes = emptyList(),
+            componentScans = emptyList(),
+        )
+        val report = StaticDiagnosisEngine.analyze(":test", index)
+        val diag = report.diagnostics.single { it.rule == "multiple-primary-beans" }
+        assertEquals(DiagnosticSeverity.ERROR, diag.severity)
+        assertTrue(diag.candidateBeans.containsAll(listOf("beanA", "beanB")))
+    }
+
+    @Test
+    fun detectsMultipleCandidatesWithoutQualifier() {
+        val beanA = makeBean("beanA", "com.example.ServiceA")
+        val beanB = makeBean("beanB", "com.example.ServiceA")
+        val ip = makeInjectionPoint("com.example.Consumer", "svc", "com.example.ServiceA", InjectionPointKind.FIELD)
+        val index = BytecodeAnalysisIndex(
+            classIndex = emptyList(),
+            beanIndex = listOf(beanA, beanB),
+            injectionPointIndex = listOf(ip),
+            missingInjectCandidateIndex = emptyList(),
+            componentBeanTypes = emptyList(),
+            componentScans = emptyList(),
+        )
+        val report = StaticDiagnosisEngine.analyze(":test", index)
+        val diag = report.diagnostics.single { it.rule == "multiple-candidates-unqualified" }
+        assertEquals(DiagnosticSeverity.WARNING, diag.severity)
+        assertTrue(diag.candidateBeans.containsAll(listOf("beanA", "beanB")))
+    }
+
+    @Test
+    fun detectsNamedBeanNotFound() {
+        val ip = makeInjectionPoint("com.example.Consumer", "svc", "com.example.ServiceA", InjectionPointKind.FIELD, qualifierName = "nonexistent")
+        val index = BytecodeAnalysisIndex(
+            classIndex = emptyList(),
+            beanIndex = emptyList(),
+            injectionPointIndex = listOf(ip),
+            missingInjectCandidateIndex = emptyList(),
+            componentBeanTypes = emptyList(),
+            componentScans = emptyList(),
+        )
+        val report = StaticDiagnosisEngine.analyze(":test", index)
+        val diag = report.diagnostics.single { it.rule == "named-bean-not-found" }
+        assertEquals(DiagnosticSeverity.ERROR, diag.severity)
+    }
+
+    @Test
+    fun detectsNamedBeanTypeMismatch() {
+        val bean = makeBean("myBean", "com.example.OtherService")
+        val ip = makeInjectionPoint("com.example.Consumer", "svc", "com.example.ServiceA", InjectionPointKind.FIELD, qualifierName = "myBean")
+        val index = BytecodeAnalysisIndex(
+            classIndex = emptyList(),
+            beanIndex = listOf(bean),
+            injectionPointIndex = listOf(ip),
+            missingInjectCandidateIndex = emptyList(),
+            componentBeanTypes = emptyList(),
+            componentScans = emptyList(),
+        )
+        val report = StaticDiagnosisEngine.analyze(":test", index)
+        val diag = report.diagnostics.single { it.rule == "named-bean-type-mismatch" }
+        assertEquals(DiagnosticSeverity.ERROR, diag.severity)
+        assertTrue(diag.candidateBeans.contains("myBean"))
+    }
+
+    @Test
+    fun reportsRuntimeManualBeanOnlyForOptionalMissingDependency() {
+        val ip = makeInjectionPoint("com.example.Consumer", "svc", "com.example.ServiceA", InjectionPointKind.FIELD, required = false)
+        val index = BytecodeAnalysisIndex(
+            classIndex = emptyList(),
+            beanIndex = emptyList(),
+            injectionPointIndex = listOf(ip),
+            missingInjectCandidateIndex = emptyList(),
+            componentBeanTypes = emptyList(),
+            componentScans = emptyList(),
+        )
+        val report = StaticDiagnosisEngine.analyze(":test", index)
+        val diag = report.diagnostics.single { it.rule == "runtime-manual-bean-only" }
+        assertEquals(DiagnosticSeverity.WARNING, diag.severity)
+    }
+
+    private fun makeBean(beanName: String, className: String, primary: Boolean = false, scope: String? = null) = BeanDefinition(
         ownerClassName = className,
         declarationName = beanName,
         beanName = beanName,
@@ -159,7 +248,7 @@ class StaticDiagnosisEngineUnitTest {
         sourceFile = null,
         kind = BeanKind.CLASS,
         exposedGenericType = null,
-        primary = false,
+        primary = primary,
         order = null,
         conditionalAnnotations = emptyList(),
         conditions = emptyList(),
@@ -171,6 +260,8 @@ class StaticDiagnosisEngineUnitTest {
         declName: String,
         depType: String,
         kind: InjectionPointKind,
+        qualifierName: String? = null,
+        required: Boolean = true,
     ) = InjectionPointDefinition(
         ownerClassName = ownerClass,
         declarationName = declName,
@@ -183,7 +274,7 @@ class StaticDiagnosisEngineUnitTest {
         sourceColumn = null,
         kind = kind,
         parameterIndex = null,
-        qualifierName = null,
-        required = true,
+        qualifierName = qualifierName,
+        required = required,
     )
 }

@@ -210,6 +210,44 @@ class CycleDependencyDetectorUnitTest {
         assertTrue(cycle.resolvable)
     }
 
+    @Test
+    fun detectsSelfCycle() {
+        // A → A（构造函数参数依赖自身）
+        val beans = listOf(createBean("beanA", "com.example.A"))
+        val injectionPoints = listOf(
+            createInjectionPoint("com.example.A", "self", "com.example.A", InjectionPointKind.CONSTRUCTOR_PARAMETER),
+        )
+
+        val cycles = CycleDependencyDetector.detectCycles(beans, injectionPoints)
+
+        assertEquals(1, cycles.size)
+        assertTrue(cycles.first().path.contains("beanA"))
+    }
+
+    @Test
+    fun detectsLongCycle() {
+        // A→B→C→D→E→A，全部字段注入，全部 singleton
+        val beans = listOf(
+            createBean("beanA", "com.example.A"),
+            createBean("beanB", "com.example.B"),
+            createBean("beanC", "com.example.C"),
+            createBean("beanD", "com.example.D"),
+            createBean("beanE", "com.example.E"),
+        )
+        val injectionPoints = listOf(
+            createInjectionPoint("com.example.A", "beanB", "com.example.B", InjectionPointKind.FIELD),
+            createInjectionPoint("com.example.B", "beanC", "com.example.C", InjectionPointKind.FIELD),
+            createInjectionPoint("com.example.C", "beanD", "com.example.D", InjectionPointKind.FIELD),
+            createInjectionPoint("com.example.D", "beanE", "com.example.E", InjectionPointKind.FIELD),
+            createInjectionPoint("com.example.E", "beanA", "com.example.A", InjectionPointKind.FIELD),
+        )
+
+        val cycles = CycleDependencyDetector.detectCycles(beans, injectionPoints)
+
+        assertEquals(1, cycles.size)
+        assertTrue(cycles.first().resolvable)
+    }
+
     // Helper functions
 
     private fun createBean(

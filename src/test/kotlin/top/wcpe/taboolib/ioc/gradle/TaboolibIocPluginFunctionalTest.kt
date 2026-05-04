@@ -278,6 +278,143 @@ class TaboolibIocPluginFunctionalTest {
     }
 
     @Test
+    fun `analyzeTaboolibIocBeans reports error for missing bean dependency`() {
+        val project = FunctionalTestProject(tempDir.resolve("ioc-missing-bean")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                includeStaticDiagnosisSamples = true,
+                analysisFailOnError = false,
+                analysisFailOnWarning = false,
+            ),
+        )
+
+        val report = project.build(":consumer:analyzeTaboolibIocBeans")
+            .let { project.readRelativeFile("consumer/build/reports/taboolib-ioc/static-diagnosis.json") }
+
+        assertContains(report, "missing-bean")
+        assertContains(report, "MissingBeanConsumer")
+    }
+
+    @Test
+    fun `analyzeTaboolibIocBeans reports error for multiple primary beans`() {
+        val project = FunctionalTestProject(tempDir.resolve("ioc-multiple-primary")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                includeStaticDiagnosisSamples = true,
+                analysisFailOnError = false,
+                analysisFailOnWarning = false,
+            ),
+        )
+
+        val report = project.build(":consumer:analyzeTaboolibIocBeans")
+            .let { project.readRelativeFile("consumer/build/reports/taboolib-ioc/static-diagnosis.json") }
+
+        assertContains(report, "multiple-primary-beans")
+        assertContains(report, "MultiplePrimaryConsumer")
+    }
+
+    @Test
+    fun `analyzeTaboolibIocBeans reports error for named bean not found`() {
+        val project = FunctionalTestProject(tempDir.resolve("ioc-named-not-found")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                includeStaticDiagnosisSamples = true,
+                analysisFailOnError = false,
+                analysisFailOnWarning = false,
+            ),
+        )
+
+        val report = project.build(":consumer:analyzeTaboolibIocBeans")
+            .let { project.readRelativeFile("consumer/build/reports/taboolib-ioc/static-diagnosis.json") }
+
+        assertContains(report, "named-bean-not-found")
+        assertContains(report, "MissingNamedConsumer")
+    }
+
+    @Test
+    fun `analyzeTaboolibIocBeans passes for valid injection`() {
+        val project = FunctionalTestProject(tempDir.resolve("ioc-valid-injection")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                analysisFailOnError = true,
+                analysisFailOnWarning = true,
+            ),
+        )
+        project.writeSourceFile(
+            "consumer/src/main/java/fixture/valid/Annotations.java",
+            """
+            package fixture.valid;
+            import java.lang.annotation.*;
+            @Retention(RetentionPolicy.CLASS) @Target(ElementType.TYPE) @interface Bean {}
+            @Retention(RetentionPolicy.CLASS) @Target({ElementType.CONSTRUCTOR, ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER}) @interface Inject {}
+            """.trimIndent(),
+        )
+        project.writeSourceFile(
+            "consumer/src/main/java/fixture/valid/ValidBeans.java",
+            """
+            package fixture.valid;
+            interface GreetingService {}
+            @Bean class GreetingServiceImpl implements GreetingService {}
+            @Bean class GreetingConsumer { GreetingConsumer(GreetingService svc) {} }
+            """.trimIndent(),
+        )
+
+        val result = project.build(":consumer:analyzeTaboolibIocBeans")
+        val report = project.readRelativeFile("consumer/build/reports/taboolib-ioc/static-diagnosis.json")
+
+        assertContains(result.output, "[analyzeTaboolibIocBeans]")
+        assertContains(report, "\"errorCount\": 0")
+        assertContains(report, "\"warningCount\": 0")
+    }
+
+    @Test
+    fun `analyzeTaboolibIocBeans reports error for constructor circular dependency`() {
+        val project = FunctionalTestProject(tempDir.resolve("ioc-circular-dep")).writeFixture(
+            FixtureOptions(
+                applyMockTaboolib = false,
+                autoTakeover = false,
+                includeIocLibrary = false,
+                localProjectPath = null,
+                analysisFailOnError = false,
+                analysisFailOnWarning = false,
+            ),
+        )
+        project.writeSourceFile(
+            "consumer/src/main/java/fixture/cycle/Annotations.java",
+            """
+            package fixture.cycle;
+            import java.lang.annotation.*;
+            @Retention(RetentionPolicy.CLASS) @Target(ElementType.TYPE) @interface Bean {}
+            """.trimIndent(),
+        )
+        project.writeSourceFile(
+            "consumer/src/main/java/fixture/cycle/CycleBeans.java",
+            """
+            package fixture.cycle;
+            @Bean class AlphaService { AlphaService(BetaService b) {} }
+            @Bean class BetaService { BetaService(AlphaService a) {} }
+            """.trimIndent(),
+        )
+
+        val report = project.build(":consumer:analyzeTaboolibIocBeans")
+            .let { project.readRelativeFile("consumer/build/reports/taboolib-ioc/static-diagnosis.json") }
+
+        assertContains(report, "circular-dependency-detected")
+    }
+
+    @Test
     fun analyzeTaskFailsWhenFailOnWarningIsEnabled() {
         val project = FunctionalTestProject(tempDir.resolve("static-diagnosis-warning-gate")).writeFixture(
             FixtureOptions(
