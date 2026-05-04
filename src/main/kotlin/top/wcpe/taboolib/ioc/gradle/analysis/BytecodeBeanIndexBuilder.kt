@@ -325,6 +325,7 @@ internal object BytecodeBeanIndexBuilder {
         private val classAnnotations = mutableListOf<CapturedAnnotation>()
         private val fields = mutableListOf<PendingField>()
         private val methods = mutableListOf<PendingMethod>()
+        private var scopeAnnotation: String? = null
 
         override fun visit(
             version: Int,
@@ -426,6 +427,7 @@ internal object BytecodeBeanIndexBuilder {
                 sourceFile = sourceFile,
                 superClassName = superClassName,
                 interfaceNames = interfaceNames,
+                fields = extractFieldsInfo(),
             )
             val isKotlinObjectSingleton = isKotlinObjectSingleton()
             val classBeanStereotype = classAnnotations.beanClassStereotype()
@@ -437,6 +439,11 @@ internal object BytecodeBeanIndexBuilder {
                 if (classBeanStereotype == "Component") {
                     componentBeanTypes += className
                 }
+                val constructorMetadata = buildConstructorMetadata(isBeanClass)
+                val scope = extractScope()
+                val lifecycleMethods = extractLifecycleMethods()
+                val dependencies = extractDependencies(isBeanClass)
+                
                 beans += BeanDefinition(
                     ownerClassName = className,
                     declarationName = className.substringAfterLast('.'),
@@ -450,6 +457,11 @@ internal object BytecodeBeanIndexBuilder {
                     order = classAnnotations.annotationValue("Order", "value") as? Int,
                     conditionalAnnotations = classConditions.map { it.annotationName },
                     conditions = classConditions,
+                    constructorMetadata = constructorMetadata,
+                    stereotypeAnnotation = classBeanStereotype,
+                    scope = scope,
+                    lifecycleMethods = lifecycleMethods,
+                    dependencies = dependencies,
                 )
             }
 
@@ -472,6 +484,8 @@ internal object BytecodeBeanIndexBuilder {
             methods.filter { it.annotations.hasAnnotation("Bean") }.forEach { method ->
                 val methodConditions = (classConditions + method.annotations.conditionDescriptors())
                     .distinctBy { it.annotationName + it.attributes.toString() }
+                val methodScope = extractMethodScope(method.annotations)
+                
                 beans += BeanDefinition(
                     ownerClassName = className,
                     declarationName = method.name,
@@ -486,6 +500,9 @@ internal object BytecodeBeanIndexBuilder {
                         ?: (classAnnotations.annotationValue("Order", "value") as? Int),
                     conditionalAnnotations = methodConditions.map { it.annotationName },
                     conditions = methodConditions,
+                    scope = methodScope,
+                    lifecycleMethods = LifecycleMethodsInfo(), // @Bean 方法不需要生命周期方法
+                    dependencies = emptyList(), // @Bean 方法的依赖通过参数注入，已在 injectionPointIndex 中
                 )
             }
 
@@ -597,15 +614,45 @@ internal object BytecodeBeanIndexBuilder {
         }
 
         private fun selectConstructorMethods(isBeanClass: Boolean): List<PendingMethod> {
-            val constructors = methods.filter { it.name == "<init>" && it.parameterTypes.isNotEmpty() }
+            val constructor = resolveRuntimeConstructor(isBeanClass) ?: return emptyList()
+            return if (constructor.parameterTypes.isNotEmpty()) listOf(constructor) else emptyList()
+        }
+
+        private fun resolveRuntimeConstructor(isBeanClass: Boolean): PendingMethod? {
+            if (!isBeanClass) {
+                return null
+            }
+            val constructors = methods.filter { it.name == "<init>" }
             if (constructors.isEmpty()) {
-                return emptyList()
+                return null
             }
             val annotatedConstructors = constructors.filter { it.annotations.hasAnnotation("Inject") }
             if (annotatedConstructors.isNotEmpty()) {
-                return annotatedConstructors
+                return annotatedConstructors.first()
             }
-            return if (isBeanClass && constructors.size == 1) constructors else emptyList()
+            if (constructors.size == 1) {
+                return constructors.first()
+            }
+            return constructors.firstOrNull { it.parameterTypes.isEmpty() }
+        }
+
+        private fun buildConstructorMetadata(isBeanClass: Boolean): ConstructorMetadata? {
+            if (!isBeanClass) {
+                return null
+            }
+            val allConstructors = methods.filter { it.name == "<init>" }
+            val hasExplicitInject = allConstructors.any { it.annotations.hasAnnotation("Inject") }
+            val runtimeConstructor = resolveRuntimeConstructor(isBeanClass)
+            val runtimeSelectedConstructorHasParameters = runtimeConstructor?.parameterTypes?.isNotEmpty() == true
+            val runtimeSelectedConstructorHasNonNullableParameters =
+                classAnnotations.hasAnnotation("Metadata") && runtimeSelectedConstructorHasParameters
+
+            return ConstructorMetadata(
+                hasExplicitInjectConstructor = hasExplicitInject,
+                totalConstructorCount = allConstructors.size,
+                runtimeSelectedConstructorHasParameters = runtimeSelectedConstructorHasParameters,
+                runtimeSelectedConstructorHasNonNullableParameters = runtimeSelectedConstructorHasNonNullableParameters,
+            )
         }
 
         private fun isKotlinObjectSingleton(): Boolean {
@@ -619,6 +666,127 @@ internal object BytecodeBeanIndexBuilder {
                 method.name == "<init>" && method.parameterTypes.isEmpty() && method.isPrivate
             }
             return hasInstanceField && hasPrivateNoArgConstructor
+        }
+
+        private fun extractScope(): String {
+            // 检查 @Scope 注解
+            classAnnotations.findAnnotation("Scope")?.let { annotation ->
+                return annotation.values["value"] as? String ?: "singleton"
+            }
+            
+            // 检查其他作用域注解
+            when {
+                classAnnotations.hasAnnotation("RefreshScope") -> return "refresh"
+                classAnnotations.hasAnnotation("ThreadScope") -> return "thread"
+                classAnnotations.hasAnnotation("Prototype") -> return "prototype"
+            }
+            
+            // 默认为 singleton
+            return "singleton"
+        }
+
+        private fun extractMethodScope(methodAnnotations: List<CapturedAnnotation>): String {
+            // 检查方法级别的 @Scope 注解
+            methodAnnotations.findAnnotation("Scope")?.let { annotation ->
+                return annotation.values["value"] as? String ?: "singleton"
+            }
+            
+            // 检查其他作用域注解
+            when {
+                methodAnnotations.hasAnnotation("RefreshScope") -> return "refresh"
+                methodAnnotations.hasAnnotation("ThreadScope") -> return "thread"
+                methodAnnotations.hasAnnotation("Prototype") -> return "prototype"
+            }
+            
+            // 如果方法上没有，则使用类级别的作用域
+            return extractScope()
+        }
+
+        private fun extractLifecycleMethods(): LifecycleMethodsInfo {
+            val postConstructMethods = mutableListOf<String>()
+            val preDestroyMethods = mutableListOf<String>()
+            val postEnableMethods = mutableListOf<String>()
+
+            methods.forEach { method ->
+                when {
+                    method.annotations.hasAnnotation("PostConstruct") -> postConstructMethods += method.name
+                    method.annotations.hasAnnotation("PreDestroy") -> preDestroyMethods += method.name
+                    method.annotations.hasAnnotation("PostEnable") -> postEnableMethods += method.name
+                }
+            }
+
+            return LifecycleMethodsInfo(
+                postConstructMethods = postConstructMethods,
+                preDestroyMethods = preDestroyMethods,
+                postEnableMethods = postEnableMethods,
+            )
+        }
+
+        private fun extractDependencies(isBeanClass: Boolean): List<DependencyReference> {
+            if (!isBeanClass) {
+                return emptyList()
+            }
+
+            val dependencies = mutableListOf<DependencyReference>()
+
+            // 从构造函数参数提取依赖
+            val constructor = resolveRuntimeConstructor(isBeanClass)
+            constructor?.let { ctor ->
+                ctor.parameterTypes.forEachIndexed { index, paramType ->
+                    val paramAnnotations = ctor.parameterAnnotations.getOrElse(index) { emptyList() }
+                    dependencies += DependencyReference(
+                        targetBeanName = paramAnnotations.qualifierName(),
+                        targetType = paramType,
+                        kind = InjectionPointKind.CONSTRUCTOR_PARAMETER,
+                        declarationName = "constructor[$index]",
+                    )
+                }
+            }
+
+            // 从 @Inject 字段提取依赖
+            val isKotlinObjectSingleton = isKotlinObjectSingleton()
+            fields.filter { field ->
+                field.annotations.containsInjectionMetadata() &&
+                    (!field.isStatic || isKotlinObjectSingleton) &&
+                    field.name != "INSTANCE"
+            }.forEach { field ->
+                dependencies += DependencyReference(
+                    targetBeanName = field.annotations.qualifierName(),
+                    targetType = field.type,
+                    kind = InjectionPointKind.FIELD,
+                    declarationName = field.name,
+                )
+            }
+
+            // 从 @Inject 方法参数提取依赖
+            methods.filter { method ->
+                method.name != "<init>" && (
+                    method.annotations.hasAnnotation("Inject") ||
+                        method.parameterAnnotations.any { it.containsInjectionMetadata() }
+                    )
+            }.forEach { method ->
+                method.parameterTypes.forEachIndexed { index, paramType ->
+                    val paramAnnotations = method.parameterAnnotations.getOrElse(index) { emptyList() }
+                    dependencies += DependencyReference(
+                        targetBeanName = paramAnnotations.qualifierName(),
+                        targetType = paramType,
+                        kind = InjectionPointKind.METHOD_PARAMETER,
+                        declarationName = method.name,
+                    )
+                }
+            }
+
+            return dependencies
+        }
+
+        private fun extractFieldsInfo(): List<FieldInfo> {
+            return fields.map { field ->
+                FieldInfo(
+                    name = field.name,
+                    type = field.type,
+                    descriptor = field.type, // 使用类型作为描述符
+                )
+            }
         }
 
         private fun captureAnnotation(descriptor: String, onComplete: (CapturedAnnotation) -> Unit): AnnotationVisitor {

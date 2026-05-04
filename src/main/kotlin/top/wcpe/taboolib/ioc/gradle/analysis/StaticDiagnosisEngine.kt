@@ -17,7 +17,11 @@ internal object StaticDiagnosisEngine {
                 analyzeInjectionPoint(injectionPoint, index.beanIndex, index.componentScans, hierarchy, beanConditionStates)
             } + index.missingInjectCandidateIndex.flatMap { candidate ->
                 analyzeMissingInjectCandidate(candidate, index.beanIndex, index.componentBeanTypes, hierarchy)
-            }
+            } + index.beanIndex.flatMap { bean ->
+                analyzeRuntimeStability(bean, projectProperties) +
+                analyzeRefreshScopeResources(bean, index.classIndex) +
+                analyzeThreadScopeUsage(bean)
+            } + analyzeCycleDependencies(index.beanIndex, index.injectionPointIndex)
             ).sortedWith(compareBy({ it.severity.name }, { it.ownerClassName }, { it.declarationName }, { it.rule }))
 
         return StaticAnalysisReport(
@@ -430,4 +434,201 @@ internal object StaticDiagnosisEngine {
             return typeName.replace(" ", "")
         }
     }
+
+    private fun analyzeRuntimeStability(
+        bean: BeanDefinition,
+        projectProperties: Map<String, String>,
+    ): List<StaticDiagnostic> {
+        if (bean.kind != BeanKind.CLASS) {
+            return emptyList()
+        }
+
+        val diagnostics = mutableListOf<StaticDiagnostic>()
+        val metadata = bean.constructorMetadata
+
+        if (metadata != null) {
+            // 只有在存在多个构造器时才有"容器可能选错"的风险
+            // 单构造器场景下，容器会自动选择唯一的构造器进行注入
+            val hasMultipleConstructors = metadata.totalConstructorCount > 1
+
+            // Rule 1: bean-constructor-not-explicitly-injected
+            // 只在多构造器场景下触发
+            if (hasMultipleConstructors && metadata.runtimeSelectedConstructorHasParameters && !metadata.hasExplicitInjectConstructor) {
+                diagnostics += StaticDiagnostic(
+                    severity = DiagnosticSeverity.WARNING,
+                    rule = "bean-constructor-not-explicitly-injected",
+                    ownerClassName = bean.ownerClassName,
+                    declarationName = bean.declarationName,
+                    sourceFile = bean.sourceFile,
+                    sourcePath = null,
+                    sourceLine = null,
+                    sourceColumn = null,
+                    injectionPointKind = InjectionPointKind.CONSTRUCTOR_PARAMETER,
+                    parameterIndex = null,
+                    dependencyType = bean.exposedType,
+                    message = "Bean 存在依赖型构造器，但未显式标注 @Inject constructor，可能在运行时被容器错误选构造或传入 null。",
+                )
+            }
+
+            // Rule 2: bean-runtime-null-injection-risk
+            // 只在多构造器场景下触发ERROR级别
+            if (
+                hasMultipleConstructors &&
+                metadata.runtimeSelectedConstructorHasNonNullableParameters &&
+                metadata.runtimeSelectedConstructorHasParameters &&
+                !metadata.hasExplicitInjectConstructor
+            ) {
+                diagnostics += StaticDiagnostic(
+                    severity = DiagnosticSeverity.ERROR,
+                    rule = "bean-runtime-null-injection-risk",
+                    ownerClassName = bean.ownerClassName,
+                    declarationName = bean.declarationName,
+                    sourceFile = bean.sourceFile,
+                    sourcePath = null,
+                    sourceLine = null,
+                    sourceColumn = null,
+                    injectionPointKind = InjectionPointKind.CONSTRUCTOR_PARAMETER,
+                    parameterIndex = null,
+                    dependencyType = bean.exposedType,
+                    message = "静态依赖图可解析，但该 Kotlin 非空构造参数的注入入口不明确，存在运行时 NPE 风险。",
+                )
+            }
+        }
+
+        // Rule 3: forbidden-component-annotation
+        // 只在显式启用时触发（通过项目属性 taboolib.ioc.forbidComponentAnnotation=true）
+        val forbidComponent = projectProperties["taboolib.ioc.forbidComponentAnnotation"]?.equals("true", ignoreCase = true) == true
+        if (forbidComponent && bean.stereotypeAnnotation == "Component") {
+            diagnostics += StaticDiagnostic(
+                severity = DiagnosticSeverity.WARNING,
+                rule = "forbidden-component-annotation",
+                ownerClassName = bean.ownerClassName,
+                declarationName = bean.declarationName,
+                sourceFile = bean.sourceFile,
+                sourcePath = null,
+                sourceLine = null,
+                sourceColumn = null,
+                injectionPointKind = InjectionPointKind.CONSTRUCTOR_PARAMETER,
+                parameterIndex = null,
+                dependencyType = bean.exposedType,
+                message = "项目约定仅允许使用 @Service/@Repository/@Inject，检测到 @Component。",
+            )
+        }
+
+        return diagnostics
+    }
+
+    private fun analyzeCycleDependencies(
+        beans: List<BeanDefinition>,
+        injectionPoints: List<InjectionPointDefinition>,
+    ): List<StaticDiagnostic> {
+        val cycles = CycleDependencyDetector.detectCycles(beans, injectionPoints)
+        return cycles.map { cycle ->
+            val severity = when {
+                cycle.kind == CycleDependencyKind.CONSTRUCTOR -> DiagnosticSeverity.ERROR
+                !cycle.resolvable -> DiagnosticSeverity.ERROR
+                else -> DiagnosticSeverity.WARNING
+            }
+
+            val message = when {
+                cycle.kind == CycleDependencyKind.CONSTRUCTOR ->
+                    "检测到构造函数循环依赖，无法解析: ${cycle.path.joinToString(" -> ")}"
+                cycle.resolvable ->
+                    "检测到字段循环依赖，可通过早期暴露解析: ${cycle.path.joinToString(" -> ")}"
+                else ->
+                    "检测到跨作用域循环依赖，无法解析: ${cycle.path.joinToString(" -> ")}"
+            }
+
+            val firstBean = beans.find { it.beanName == cycle.path.first() }!!
+            diagnostic(
+                severity = severity,
+                rule = "circular-dependency-detected",
+                ownerClassName = firstBean.ownerClassName,
+                declarationName = firstBean.declarationName,
+                sourceFile = firstBean.sourceFile,
+                message = message,
+                candidateBeans = cycle.path,
+            )
+        }
+    }
+
+    private fun analyzeRefreshScopeResources(
+        bean: BeanDefinition,
+        classIndex: List<ClassIndexEntry>,
+    ): List<StaticDiagnostic> {
+        if (bean.scope != "refresh") return emptyList()
+
+        val classEntry = classIndex.find { it.className == bean.ownerClassName } ?: return emptyList()
+        val hasResourceFields = classEntry.fields.any { it.type in RESOURCE_TYPES }
+        val hasPreDestroy = bean.lifecycleMethods.preDestroyMethods.isNotEmpty()
+
+        if (hasResourceFields && !hasPreDestroy) {
+            return listOf(
+                diagnostic(
+                    severity = DiagnosticSeverity.WARNING,
+                    rule = "refresh-scope-missing-predestroy",
+                    ownerClassName = bean.ownerClassName,
+                    declarationName = bean.declarationName,
+                    sourceFile = bean.sourceFile,
+                    message = "@RefreshScope Bean 持有资源类型字段但缺少 @PreDestroy 方法，可能导致资源泄漏。",
+                ),
+            )
+        }
+
+        return emptyList()
+    }
+
+    private fun analyzeThreadScopeUsage(
+        bean: BeanDefinition,
+    ): List<StaticDiagnostic> {
+        if (bean.scope != "thread") return emptyList()
+
+        return listOf(
+            diagnostic(
+                severity = DiagnosticSeverity.INFO,
+                rule = "thread-scope-usage-warning",
+                ownerClassName = bean.ownerClassName,
+                declarationName = bean.declarationName,
+                sourceFile = bean.sourceFile,
+                message = "@ThreadScope Bean 在线程池环境中需要手动调用 clearCurrentThread() 防止内存泄漏。",
+            ),
+        )
+    }
+
+    private fun diagnostic(
+        severity: DiagnosticSeverity,
+        rule: String,
+        ownerClassName: String,
+        declarationName: String,
+        sourceFile: String?,
+        message: String,
+        candidateBeans: List<String> = emptyList(),
+    ): StaticDiagnostic {
+        return StaticDiagnostic(
+            severity = severity,
+            rule = rule,
+            ownerClassName = ownerClassName,
+            declarationName = declarationName,
+            sourceFile = sourceFile,
+            sourcePath = null,
+            sourceLine = null,
+            sourceColumn = null,
+            injectionPointKind = InjectionPointKind.CONSTRUCTOR_PARAMETER,
+            parameterIndex = null,
+            dependencyType = ownerClassName,
+            message = message,
+            candidateBeans = candidateBeans.distinct().sorted(),
+        )
+    }
+
+    private val RESOURCE_TYPES = setOf(
+        "java.sql.Connection",
+        "java.io.InputStream",
+        "java.io.OutputStream",
+        "java.io.Reader",
+        "java.io.Writer",
+        "java.net.Socket",
+        "java.nio.channels.Channel",
+        "javax.sql.DataSource",
+    )
 }

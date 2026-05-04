@@ -11,9 +11,16 @@ internal enum class InjectionPointKind {
     METHOD_PARAMETER,
 }
 
+internal enum class CycleDependencyKind {
+    CONSTRUCTOR,  // 构造函数循环
+    FIELD,        // 字段循环
+    MIXED,        // 混合
+}
+
 internal enum class DiagnosticSeverity {
     ERROR,
     WARNING,
+    INFO,
 }
 
 internal enum class ConditionEvaluationState {
@@ -22,6 +29,31 @@ internal enum class ConditionEvaluationState {
     UNKNOWN,
 }
 
+internal data class FieldInfo(
+    val name: String,
+    val type: String,
+    val descriptor: String,
+)
+
+internal data class LifecycleMethodsInfo(
+    val postConstructMethods: List<String> = emptyList(),
+    val preDestroyMethods: List<String> = emptyList(),
+    val postEnableMethods: List<String> = emptyList(),
+)
+
+internal data class DependencyReference(
+    val targetBeanName: String?,  // 如果有 @Named
+    val targetType: String,
+    val kind: InjectionPointKind,  // 构造函数、字段、方法
+    val declarationName: String,   // 字段名或参数名
+)
+
+internal data class DependencyCycle(
+    val path: List<String>,  // Bean 名称路径
+    val kind: CycleDependencyKind,
+    val resolvable: Boolean,  // 是否可通过早期暴露解决
+)
+
 internal data class ClassIndexEntry(
     val className: String,
     val packageName: String,
@@ -29,11 +61,19 @@ internal data class ClassIndexEntry(
     val superClassName: String?,
     val interfaceNames: List<String>,
     val genericSuperTypes: List<String> = emptyList(),
+    val fields: List<FieldInfo> = emptyList(),
 )
 
 internal data class ConditionDescriptor(
     val annotationName: String,
     val attributes: Map<String, Any>,
+)
+
+internal data class ConstructorMetadata(
+    val hasExplicitInjectConstructor: Boolean,
+    val totalConstructorCount: Int,
+    val runtimeSelectedConstructorHasParameters: Boolean,
+    val runtimeSelectedConstructorHasNonNullableParameters: Boolean,
 )
 
 internal data class TypeAliasDefinition(
@@ -56,6 +96,11 @@ internal data class BeanDefinition(
     val order: Int?,
     val conditionalAnnotations: List<String>,
     val conditions: List<ConditionDescriptor>,
+    val constructorMetadata: ConstructorMetadata? = null,
+    val stereotypeAnnotation: String? = null,
+    val scope: String? = null,
+    val lifecycleMethods: LifecycleMethodsInfo = LifecycleMethodsInfo(),
+    val dependencies: List<DependencyReference> = emptyList(),
 )
 
 internal data class InjectionPointDefinition(
