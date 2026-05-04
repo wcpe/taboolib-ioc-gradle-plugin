@@ -143,6 +143,14 @@ tasks.named("check") {
     dependsOn(tasks.named("jacocoTestCoverageVerification"))
 }
 
+tasks.register("ciTest") {
+    group = "verification"
+    description = "Runs unit tests, coverage verification, and plugin integration/server tests."
+    dependsOn(tasks.named("test"))
+    dependsOn(tasks.named("jacocoTestCoverageVerification"))
+    dependsOn(":plugin-integration-tests:test")
+}
+
 tasks.register("printPublishTargets") {
     group = "publishing"
     description = "Prints the currently configured Maven publish target and common publish commands."
