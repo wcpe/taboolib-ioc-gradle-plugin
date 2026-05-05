@@ -50,11 +50,10 @@ jobs:
         uses: dorny/test-reporter@v1
         with:
           name: JUnit Test Results
-          path: |
-            build/test-results/test/*.xml
-            plugin-integration-tests/build/test-results/test/*.xml
+          path: '**/build/test-results/test/*.xml'
           reporter: java-junit
           fail-on-error: false
+          fail-on-empty: false
 
       - name: Upload test reports
         if: always()
