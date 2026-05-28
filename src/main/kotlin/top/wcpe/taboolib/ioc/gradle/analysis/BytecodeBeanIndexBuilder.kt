@@ -847,6 +847,10 @@ internal object BytecodeBeanIndexBuilder {
     private fun List<CapturedAnnotation>.beanClassStereotype(): String? {
         return when {
             hasAnnotation("Component") -> "Component"
+            hasAnnotation("Service") -> "Component"
+            hasAnnotation("Repository") -> "Component"
+            hasAnnotation("Controller") -> "Component"
+            hasAnnotation("Aspect") -> "Component"
             hasAnnotation("Configuration") -> "Configuration"
             hasAnnotation("Bean") -> "Bean"
             else -> null
@@ -883,7 +887,7 @@ internal object BytecodeBeanIndexBuilder {
     }
 
     private fun resolveBeanName(annotations: List<CapturedAnnotation>, defaultName: String): String {
-        val beanAnnotation = sequenceOf("Bean", "Component")
+        val beanAnnotation = sequenceOf("Bean", "Component", "Service", "Repository", "Controller")
             .mapNotNull { annotationName -> annotations.findAnnotation(annotationName) }
             .firstOrNull()
             ?: return defaultName
