@@ -8,6 +8,8 @@
 - 自动推导目标包并追加 IoC relocate。
 - 支持本仓库联调时改用 `project(':ioc-lib')` 之类的本地项目依赖。
 - 对缺失 `io.izzel.taboolib`、目标包无法推导、手写 relocate 冲突等场景给出明确诊断。
+- 编译时静态分析：检测缺失 Bean、类型不兼容、多个 `@Primary` 等注入问题。
+- 支持 `@Service`、`@Repository`、`@Controller`、`@Aspect` 注解识别（等同 `@Component`）。
 - 预留 `StandaloneBackend` 扩展位，但当前版本只实现 `TABOOLIB` 后端。
 
 ## 插件 ID
@@ -15,7 +17,7 @@
 ```groovy
 plugins {
     id 'io.izzel.taboolib' version '2.0.36'
-    id 'top.wcpe.taboolib.ioc' version '1.0.0-SNAPSHOT'
+    id 'top.wcpe.taboolib.ioc' version '0.0.6'
 }
 ```
 
@@ -49,7 +51,7 @@ Kotlin DSL：
 plugins {
     kotlin("jvm") version "1.9.25"
     id("io.izzel.taboolib") version "2.0.36"
-    id("top.wcpe.taboolib.ioc") version "1.0.0-SNAPSHOT"
+    id("top.wcpe.taboolib.ioc") version "0.0.6"
 }
 
 group = "com.example.demo"
@@ -70,7 +72,7 @@ taboolibIoc {
     autoTakeover = true
 
     // IoC 依赖版本：当未显式指定 dependencyNotation 时，会用于推导默认坐标版本。
-    iocVersion = '1.0.0-SNAPSHOT'
+    iocVersion = '1.2.0-SNAPSHOT'
 
     // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 com.example.custom.ioc。
     targetPackage = 'com.example.custom'
@@ -82,7 +84,7 @@ taboolibIoc {
     analysisFailOnWarning = false
 
     // 使用外部 Maven 坐标作为 IoC 依赖来源。
-    dependencyNotation = 'top.wcpe.taboolib.ioc:taboolib-ioc:1.0.0-SNAPSHOT'
+    dependencyNotation = 'top.wcpe.taboolib.ioc:taboolib-ioc:1.2.0-SNAPSHOT'
 
     // 本地联调方式（与 dependencyNotation 二选一）。
     // 当前示例不启用本地项目，这里只保留写法演示。
@@ -98,7 +100,7 @@ taboolibIoc {
     autoTakeover(true)
 
     // IoC 依赖版本：当未显式指定 dependency(...) 时，会用于推导默认坐标版本。
-    iocVersion("1.0.0-SNAPSHOT")
+    iocVersion("1.2.0-SNAPSHOT")
 
     // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 com.example.custom.ioc。
     targetPackage("com.example.custom")
@@ -110,7 +112,7 @@ taboolibIoc {
     analysisFailOnWarning(false)
 
     // 使用外部 Maven 坐标作为 IoC 依赖来源。
-    dependency("top.wcpe.taboolib.ioc:taboolib-ioc:1.0.0-SNAPSHOT")
+    dependency("top.wcpe.taboolib.ioc:taboolib-ioc:1.2.0-SNAPSHOT")
 
     // 本地联调方式（与 dependency(...) 二选一）。
     // 当前示例不启用本地项目，这里只保留写法演示。
@@ -124,7 +126,7 @@ taboolibIoc {
 import top.wcpe.taboolib.ioc.gradle.TaboolibIocExtension
 
 extensions.configure<TaboolibIocExtension>("taboolibIoc") {
-    iocVersion.set("1.0.0-SNAPSHOT")
+    iocVersion.set("1.2.0-SNAPSHOT")
     targetPackage.set("com.example.custom")
 }
 ```
@@ -132,13 +134,13 @@ extensions.configure<TaboolibIocExtension>("taboolibIoc") {
 或者直接在 `gradle.properties` 中声明：
 
 ```properties
-taboolib.ioc.version=1.0.0-SNAPSHOT
+taboolib.ioc.version=1.2.0-SNAPSHOT
 ```
 
 说明：
 
 - `autoTakeover`：关闭后不再自动注入依赖，也不会自动追加 relocate。
-- `iocVersion`：默认读取 `taboolib.ioc.version`；若未设置，则回退到插件自身打包时携带的版本；再无法确定时才回退到内置默认值 `1.0.0-SNAPSHOT`。不会再默认跟随 consumer 项目版本。
+- `iocVersion`：默认读取 `taboolib.ioc.version`；若未设置，则回退到插件自身打包时携带的版本；再无法确定时才回退到内置默认值 `1.2.0-SNAPSHOT`。不会再默认跟随 consumer 项目版本。
 - `targetPackage`：显式指定目标包根，最终 relocate 目标统一为 `<targetPackage>.ioc`。如果已经以 `.ioc` 结尾，则不会重复追加。
 - `analysisFailOnError`：默认 `true`，静态诊断发现 error 时让 `analyzeTaboolibIocBeans` 和 `check/build` 失败。
 - `analysisFailOnWarning`：默认 `false`，打开后 warning 也会触发质量门失败。
@@ -190,6 +192,12 @@ taboolibIoc {
 - `error`：缺失 Bean、名称 Bean 不存在、名称 Bean 类型不兼容、多个 `@Primary`。
 - `warning`：多个候选且未限定、条件 Bean 无法被静态完全判定、依赖只能靠运行时手动 Bean 补足、`@ComponentScan` 可能排除某候选。
 
+Bean 注解识别范围：
+
+- `@Component`、`@Service`、`@Repository`、`@Controller`、`@Aspect` 均被视为等价的组件注解。
+- `@Configuration` 被识别为配置类。
+- `@Bean` 被识别为工厂方法。
+
 说明：
 
 - 如果某个条件 Bean 在当前构建下已能静态判定为“不满足条件”，并且因此导致依赖拿不到 Bean，当前会直接按 `missing-bean` 记为 `error`。
@@ -206,7 +214,7 @@ taboolibIoc {
 当前仓库内已经验证通过的组合：
 
 - Java：17
-- Gradle Wrapper：8.10.2
+- Gradle Wrapper：8.14.4
 - Kotlin JVM Plugin：1.9.25
 - `io.izzel.taboolib` Gradle 插件：2.0.36
 
@@ -284,3 +292,7 @@ $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
 - 两个产物中都不再保留原始的 `top/wcpe/taboolib/ioc/...` 路径。
 
 执行 `analyzeTaboolibIocBeans` 后，可打开对应模块下的 `build/reports/taboolib-ioc/static-diagnosis.json` 查看静态诊断报告。
+
+## 更新日志
+
+详见 [CHANGELOG.md](./CHANGELOG.md)。
