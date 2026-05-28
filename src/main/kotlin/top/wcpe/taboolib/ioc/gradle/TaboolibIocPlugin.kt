@@ -148,7 +148,18 @@ class TaboolibIocPlugin : Plugin<Project> {
             task.failOnWarning.convention(extension.analysisFailOnWarning)
             task.projectPropertiesInput.convention(
                 project.provider {
-                    project.properties.entries.associate { (key, value) -> key.toString() to value.toString() }
+                    project.properties.entries.mapNotNull { (key, value) ->
+                        val strKey = key.toString()
+                        if (value == null) strKey to "null"
+                        else {
+                            val strValue = try {
+                                value.toString()
+                            } catch (_: Throwable) {
+                                value.javaClass.name
+                            }
+                            strKey to strValue
+                        }
+                    }.toMap()
                 },
             )
         }
