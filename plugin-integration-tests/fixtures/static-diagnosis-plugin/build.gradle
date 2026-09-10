@@ -1,7 +1,7 @@
 plugins {
     id 'java'
     id 'org.jetbrains.kotlin.jvm' version '1.9.25'
-    id 'io.izzel.taboolib' version '2.0.36'
+    id 'io.izzel.taboolib' version '2.0.38-wcpe.1'
     id 'top.wcpe.taboolib.ioc'
 }
 

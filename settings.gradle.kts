@@ -6,6 +6,7 @@ pluginManagement {
         // - maven.aliyun.com 与 maven.wcpe.top 经代理可达；阿里云 public 是 Central 全量镜像。
         // 因此阿里云镜像优先解析，mavenCentral 供 CI/无代理环境兜底，wcpe 只兜底私有产物。
         maven("https://maven.aliyun.com/repository/public")
+        maven("https://maven.wcpe.top/repository/maven-releases/")
         maven("https://maven.wcpe.top/repository/maven-public/")
         mavenCentral()
         gradlePluginPortal()

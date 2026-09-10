@@ -1,5 +1,7 @@
 pluginManagement {
     repositories {
+        // 顺序敏感（本机代理环境实测结论）：wcpe maven-releases 前置（2.0.38-wcpe.1 只在此仓库）。
+        maven { url = uri('https://maven.wcpe.top/repository/maven-releases/') }
         gradlePluginPortal()
         mavenCentral()
         mavenLocal()

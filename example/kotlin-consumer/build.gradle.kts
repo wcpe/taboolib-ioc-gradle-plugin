@@ -10,12 +10,14 @@ import io.izzel.taboolib.gradle.Kether
 plugins {
     java
     kotlin("jvm")
-    id("io.izzel.taboolib") version "2.0.36"
+    id("io.izzel.taboolib") version "2.0.38-wcpe.1"
     id("top.wcpe.taboolib.ioc") version "0.0.6"
 }
 
 
 repositories {
+    // wcpe maven-releases 前置（TabooLib 2.0.38-wcpe.1 只在此仓库；maven-public 不聚合）。
+    maven("https://maven.wcpe.top/repository/maven-releases/")
     mavenLocal()
     mavenCentral()
     maven("https://maven.wcpe.top/repository/maven-public/")

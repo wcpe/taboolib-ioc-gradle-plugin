@@ -25,6 +25,7 @@ repositories {
     //   而本机代理对 repo.maven.apache.org 的 TLS 握手会被远端重置 → 解析失败。
     // - 因此把「可达的全量镜像」放在 mavenLocal() 之前，让网络仓库先行兜底。
     maven("https://maven.aliyun.com/repository/public")
+    maven("https://maven.wcpe.top/repository/maven-releases/")
     maven("https://maven.wcpe.top/repository/maven-public/")
     mavenLocal()
     mavenCentral()

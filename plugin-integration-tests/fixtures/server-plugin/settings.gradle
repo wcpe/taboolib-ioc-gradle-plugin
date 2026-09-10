@@ -1,5 +1,10 @@
 pluginManagement {
     repositories {
+        // 顺序敏感（本机代理环境实测结论）：
+        // - TabooLib 2.0.38-wcpe.1 与 mc-testkit 0.8.0 只在 wcpe maven-releases，maven-public 不聚合（实测 404）；
+        // - ~/.m2 的 mavenLocal() 可能被 _remote.repositories 把半落盘模块钉到不可达来源，
+        //   故把可达的 wcpe releases 前置，网络仓库先行兜底。
+        maven { url = uri('https://maven.wcpe.top/repository/maven-releases/') }
         gradlePluginPortal()
         mavenCentral()
         mavenLocal()

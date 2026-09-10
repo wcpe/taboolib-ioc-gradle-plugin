@@ -3,6 +3,8 @@ plugins {
 }
 
 repositories {
+    // wcpe maven-releases 前置（TabooLib 2.0.38-wcpe.1 / mc-testkit 0.8.0 只在此仓库；maven-public 不聚合）。
+    maven("https://maven.wcpe.top/repository/maven-releases/")
     mavenLocal()
     mavenCentral()
     gradlePluginPortal()
