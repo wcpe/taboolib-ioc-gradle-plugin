@@ -15,42 +15,69 @@ import org.objectweb.asm.Type
 
 internal object BytecodeBeanIndexBuilder {
 
+    /**
+     * C-P2-21：Taboolib IoC 注入相关注解的 FQCN 白名单。
+     * 采集层此前用简单名匹配，跨包同名注解会被误命中。
+     */
+    private val IOC_INJECTION_ANNOTATIONS = setOf(
+        "top.wcpe.taboolib.ioc.annotation.Inject",
+        "top.wcpe.taboolib.ioc.annotation.Named",
+        "top.wcpe.taboolib.ioc.annotation.Resource",
+    )
+
+    /** C-P2-21：非 Taboolib IoC 的同名注解 FQCN 黑名单（明确排除） */
+    private val FOREIGN_INJECT_FQCNS = setOf(
+        "com.google.inject.Inject",
+        "javax.inject.Inject",
+        "jakarta.inject.Inject",
+        "org.springframework.beans.factory.annotation.Autowired",
+    )
+    private val FOREIGN_NAMED_FQCNS = setOf(
+        "javax.inject.Named",
+        "jakarta.inject.Named",
+        "com.google.inject.name.Named",
+    )
+    private val FOREIGN_RESOURCE_FQCNS = setOf(
+        "javax.annotation.Resource",
+        "jakarta.annotation.Resource",
+    )
+
     fun build(
         classpathEntries: Iterable<Path>,
         sourceDirectories: Iterable<Path> = emptyList(),
     ): BytecodeAnalysisIndex {
+        val existingEntries = classpathEntries.filter { Files.exists(it) }.distinct()
+
+        // 两阶段采集：先解析全部类得到 collector（保留插入顺序，项目输出在前），
+        // 再逐个构建索引 —— 第二阶段需要跨类读取 Companion 类的 $annotations 载体（H3）
+        val collectors = LinkedHashMap<String, ClassCollector>()
+        existingEntries.forEach { entry ->
+            when {
+                Files.isDirectory(entry) -> scanDirectory(entry, collectors)
+                Files.isRegularFile(entry) && entry.toString().endsWith(".jar") -> scanJar(entry, collectors)
+            }
+        }
+
         val classIndex = mutableListOf<ClassIndexEntry>()
         val beanIndex = mutableListOf<BeanDefinition>()
         val injectionPointIndex = mutableListOf<InjectionPointDefinition>()
         val missingInjectCandidateIndex = mutableListOf<InjectionPointDefinition>()
         val componentBeanTypes = mutableListOf<String>()
         val componentScans = mutableListOf<ComponentScanDefinition>()
-        val existingEntries = classpathEntries.filter { Files.exists(it) }.distinct()
+        val aspectIndex = mutableListOf<AspectDefinition>()
+        val valueFieldIndex = mutableListOf<ValueFieldDefinition>()
 
-        existingEntries.forEach { entry ->
-            when {
-                Files.isDirectory(entry) -> scanDirectory(
-                    entry,
-                    classIndex,
-                    beanIndex,
-                    injectionPointIndex,
-                    missingInjectCandidateIndex,
-                    componentBeanTypes,
-                    componentScans,
-                )
-
-                Files.isRegularFile(entry) && entry.toString().endsWith(".jar") -> {
-                    scanJar(
-                        entry,
-                        classIndex,
-                        beanIndex,
-                        injectionPointIndex,
-                        missingInjectCandidateIndex,
-                        componentBeanTypes,
-                        componentScans,
-                    )
-                }
-            }
+        collectors.values.forEach { collector ->
+            val companionCarriers = collectors[collector.collectorClassName + "\$Companion"]?.carrierAnnotations().orEmpty()
+            val scannedClass = collector.toScannedClass(companionCarriers) ?: return@forEach
+            classIndex += scannedClass.classIndexEntry
+            beanIndex += scannedClass.beanDefinitions
+            injectionPointIndex += scannedClass.injectionPoints
+            missingInjectCandidateIndex += scannedClass.missingInjectCandidates
+            componentBeanTypes += scannedClass.componentBeanTypes
+            componentScans += scannedClass.componentScans
+            aspectIndex += scannedClass.aspectDefinitions
+            valueFieldIndex += scannedClass.valueFields
         }
 
         val rawIndex = BytecodeAnalysisIndex(
@@ -60,9 +87,44 @@ internal object BytecodeBeanIndexBuilder {
             missingInjectCandidateIndex = missingInjectCandidateIndex.distinct().sortedWith(compareBy({ it.ownerClassName }, { it.declarationName }, { it.kind.name })),
             componentBeanTypes = componentBeanTypes.distinct().sorted(),
             componentScans = componentScans.distinct().sortedBy { it.ownerClassName },
+            aspectIndex = aspectIndex.distinct().sortedBy { it.aspectClassName },
+            valueFieldIndex = valueFieldIndex.distinct().sortedWith(compareBy({ it.ownerClassName }, { it.fieldName })),
         )
         val genericIndex = enrichGenericMetadata(rawIndex, existingEntries)
-        return enrichSourceLocations(genericIndex, sourceDirectories)
+        return enrichSourceLocations(deduplicateCrossEntryDuplicates(genericIndex), sourceDirectories)
+    }
+
+    /**
+     * duplicate-classpath-copy 修复：同一份类可能同时出现在多个扫描根里
+     * （例如 compileClasspath 与 taboo 依赖各带一份，且字节码因版本不同而不完全一致，
+     * 全等 distinct() 无法去重），导致 beanIndex 出现同 beanName 的假重复，
+     * 连锁触发 duplicate-bean-name / multiple-primary-beans 假阳性。
+     * 这里按类名 / Bean 三元组去重并保留**先出现**的条目
+     * （扫描根顺序为 project 输出在前、依赖在后，即项目输出优先）。
+     */
+    private fun deduplicateCrossEntryDuplicates(index: BytecodeAnalysisIndex): BytecodeAnalysisIndex {
+        return index.copy(
+            classIndex = index.classIndex.distinctBy { it.className },
+            beanIndex = index.beanIndex.distinctBy {
+                listOf(it.ownerClassName, it.declarationName, it.beanName, it.exposedType, it.kind.name)
+            },
+            injectionPointIndex = index.injectionPointIndex.distinctBy {
+                listOf(
+                    it.ownerClassName,
+                    it.declarationName,
+                    it.dependencyType,
+                    it.kind.name,
+                    it.parameterIndex?.toString().orEmpty(),
+                    it.qualifierName.orEmpty(),
+                    it.required.toString(),
+                    it.lazy.toString(),
+                )
+            },
+            missingInjectCandidateIndex = index.missingInjectCandidateIndex.distinctBy {
+                listOf(it.ownerClassName, it.declarationName, it.dependencyType, it.kind.name, it.parameterIndex?.toString().orEmpty())
+            },
+            valueFieldIndex = index.valueFieldIndex.distinctBy { listOf(it.ownerClassName, it.fieldName, it.expression) },
+        )
     }
 
     private fun enrichSourceLocations(index: BytecodeAnalysisIndex, sourceDirectories: Iterable<Path>): BytecodeAnalysisIndex {
@@ -100,52 +162,24 @@ internal object BytecodeBeanIndexBuilder {
 
     private fun scanDirectory(
         root: Path,
-        classIndex: MutableList<ClassIndexEntry>,
-        beanIndex: MutableList<BeanDefinition>,
-        injectionPointIndex: MutableList<InjectionPointDefinition>,
-        missingInjectCandidateIndex: MutableList<InjectionPointDefinition>,
-        componentBeanTypes: MutableList<String>,
-        componentScans: MutableList<ComponentScanDefinition>,
+        collectors: LinkedHashMap<String, ClassCollector>,
     ) {
         Files.walk(root).use { stream ->
             stream.filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
-                .forEach { classFile ->
-                    scanClassBytes(
-                        Files.readAllBytes(classFile),
-                        classIndex,
-                        beanIndex,
-                        injectionPointIndex,
-                        missingInjectCandidateIndex,
-                        componentBeanTypes,
-                        componentScans,
-                    )
-                }
+                .forEach { classFile -> scanClassBytes(Files.readAllBytes(classFile), collectors) }
         }
     }
 
     private fun scanJar(
         jarPath: Path,
-        classIndex: MutableList<ClassIndexEntry>,
-        beanIndex: MutableList<BeanDefinition>,
-        injectionPointIndex: MutableList<InjectionPointDefinition>,
-        missingInjectCandidateIndex: MutableList<InjectionPointDefinition>,
-        componentBeanTypes: MutableList<String>,
-        componentScans: MutableList<ComponentScanDefinition>,
+        collectors: LinkedHashMap<String, ClassCollector>,
     ) {
         JarFile(jarPath.toFile()).use { jarFile ->
             jarFile.entries().asSequence()
                 .filter { !it.isDirectory && it.name.endsWith(".class") }
                 .forEach { entry ->
                     jarFile.getInputStream(entry).use { input ->
-                        scanClassBytes(
-                            input.readBytes(),
-                            classIndex,
-                            beanIndex,
-                            injectionPointIndex,
-                            missingInjectCandidateIndex,
-                            componentBeanTypes,
-                            componentScans,
-                        )
+                        scanClassBytes(input.readBytes(), collectors)
                     }
                 }
         }
@@ -153,22 +187,14 @@ internal object BytecodeBeanIndexBuilder {
 
     private fun scanClassBytes(
         classBytes: ByteArray,
-        classIndex: MutableList<ClassIndexEntry>,
-        beanIndex: MutableList<BeanDefinition>,
-        injectionPointIndex: MutableList<InjectionPointDefinition>,
-        missingInjectCandidateIndex: MutableList<InjectionPointDefinition>,
-        componentBeanTypes: MutableList<String>,
-        componentScans: MutableList<ComponentScanDefinition>,
+        collectors: LinkedHashMap<String, ClassCollector>,
     ) {
         val collector = ClassCollector()
         ClassReader(classBytes).accept(collector, ClassReader.SKIP_CODE or ClassReader.SKIP_FRAMES)
-        val scannedClass = collector.toScannedClass() ?: return
-        classIndex += scannedClass.classIndexEntry
-        beanIndex += scannedClass.beanDefinitions
-        injectionPointIndex += scannedClass.injectionPoints
-        missingInjectCandidateIndex += scannedClass.missingInjectCandidates
-        componentBeanTypes += scannedClass.componentBeanTypes
-        componentScans += scannedClass.componentScans
+        if (collector.collectorClassName.isNotEmpty()) {
+            // 同一 FQCN 出现在多个扫描根时保留先出现的（项目输出优先），与去重策略一致
+            collectors.putIfAbsent(collector.collectorClassName, collector)
+        }
     }
 
     private fun enrichGenericMetadata(index: BytecodeAnalysisIndex, scanRoots: List<Path>): BytecodeAnalysisIndex {
@@ -280,6 +306,8 @@ internal object BytecodeBeanIndexBuilder {
         val missingInjectCandidates: List<InjectionPointDefinition>,
         val componentBeanTypes: List<String>,
         val componentScans: List<ComponentScanDefinition>,
+        val aspectDefinitions: List<AspectDefinition>,
+        val valueFields: List<ValueFieldDefinition>,
     )
 
     private data class CapturedAnnotation(
@@ -293,6 +321,8 @@ internal object BytecodeBeanIndexBuilder {
         val name: String,
         val type: String,
         val annotations: List<CapturedAnnotation>,
+        /** 该字段的注解是否来自 Companion 类的 $annotations 载体（H3 跨类合并） */
+        val fromCompanion: Boolean = false,
     ) {
         val isFinal: Boolean
             get() = access and Opcodes.ACC_FINAL != 0
@@ -311,6 +341,9 @@ internal object BytecodeBeanIndexBuilder {
     ) {
         val isPrivate: Boolean
             get() = access and Opcodes.ACC_PRIVATE != 0
+
+        val isStaticMethod: Boolean
+            get() = access and Opcodes.ACC_STATIC != 0
     }
 
     private class ClassCollector : ClassVisitor(Opcodes.ASM9) {
@@ -320,12 +353,20 @@ internal object BytecodeBeanIndexBuilder {
         private var sourceFile: String? = null
         private var superClassName: String? = null
         private var interfaceNames: List<String> = emptyList()
+        private var classAccess: Int = 0
         private var skipped: Boolean = false
 
         private val classAnnotations = mutableListOf<CapturedAnnotation>()
         private val fields = mutableListOf<PendingField>()
         private val methods = mutableListOf<PendingMethod>()
         private var scopeAnnotation: String? = null
+
+        /** H1：Kotlin 属性注解的合成载体方法（`xxx$annotations` / `getXxx$annotations` 等）→ (方法名, 注解) */
+        private val annotationCarriers = mutableListOf<Pair<String, List<CapturedAnnotation>>>()
+
+        /** 供 build() 第二阶段读取（companion 跨类合并与以类名建索引用） */
+        val collectorClassName: String
+            get() = className
 
         override fun visit(
             version: Int,
@@ -339,7 +380,14 @@ internal object BytecodeBeanIndexBuilder {
             packageName = className.substringBeforeLast('.', missingDelimiterValue = "")
             superClassName = superName?.replace('/', '.')?.takeUnless { it == "java.lang.Object" }
             interfaceNames = interfaces.orEmpty().map { it.replace('/', '.') }
-            skipped = className.contains('$') || access and Opcodes.ACC_SYNTHETIC != 0
+            classAccess = access
+            // H2 修复：此前 `className.contains('$')` 会跳过全部嵌套类与 companion object。
+            // 现在只跳过匿名类（简单名最后一个 $ 段为空或纯数字，如 Foo$1、Foo$main$1）与合成类
+            val simpleName = name.substringAfterLast('/')
+            val lastSegment = simpleName.substringAfterLast('$', simpleName)
+            skipped = access and Opcodes.ACC_SYNTHETIC != 0 ||
+                lastSegment.isEmpty() ||
+                lastSegment.all { it.isDigit() }
         }
 
         override fun visitSource(source: String?, debug: String?) {
@@ -384,7 +432,14 @@ internal object BytecodeBeanIndexBuilder {
             signature: String?,
             exceptions: Array<out String>?,
         ): MethodVisitor? {
-            if (skipped || access and Opcodes.ACC_SYNTHETIC != 0 || access and Opcodes.ACC_BRIDGE != 0) {
+            // H1 修复：Kotlin 属性注解编译到合成载体方法 `xxx$annotations` / `getXxx$annotations` 等，
+            // 此前 ACC_SYNTHETIC 一刀切过滤导致 Kotlin 属性上的 @Inject/@Value 等注解整体漏读。
+            // 现在放行载体方法（仍不入 methods 索引），把其注解合并回同名字段。
+            val isAnnotationCarrier = name.endsWith("\$annotations")
+            if (skipped ||
+                (access and Opcodes.ACC_SYNTHETIC != 0 && !isAnnotationCarrier) ||
+                access and Opcodes.ACC_BRIDGE != 0
+            ) {
                 return null
             }
             val annotations = mutableListOf<CapturedAnnotation>()
@@ -404,6 +459,10 @@ internal object BytecodeBeanIndexBuilder {
                 }
 
                 override fun visitEnd() {
+                    if (isAnnotationCarrier) {
+                        annotationCarriers += name to annotations.toList()
+                        return
+                    }
                     methods += PendingMethod(
                         access = access,
                         name = name,
@@ -416,10 +475,11 @@ internal object BytecodeBeanIndexBuilder {
             }
         }
 
-        fun toScannedClass(): ScannedClass? {
+        fun toScannedClass(companionCarriers: Map<String, List<CapturedAnnotation>> = emptyMap()): ScannedClass? {
             if (skipped || className.isEmpty()) {
                 return null
             }
+            mergeCarrierAnnotations(companionCarriers)
 
             val classIndexEntry = ClassIndexEntry(
                 className = className,
@@ -428,6 +488,9 @@ internal object BytecodeBeanIndexBuilder {
                 superClassName = superClassName,
                 interfaceNames = interfaceNames,
                 fields = extractFieldsInfo(),
+                isInterface = classAccess and Opcodes.ACC_INTERFACE != 0,
+                isAbstract = classAccess and Opcodes.ACC_ABSTRACT != 0,
+                methods = extractMethodsInfo(),
             )
             val isKotlinObjectSingleton = isKotlinObjectSingleton()
             val classBeanStereotype = classAnnotations.beanClassStereotype()
@@ -461,6 +524,7 @@ internal object BytecodeBeanIndexBuilder {
                     stereotypeAnnotation = classBeanStereotype,
                     scope = scope,
                     lifecycleMethods = lifecycleMethods,
+                    lifecycleMethodDetails = extractLifecycleMethodDetails(),
                     dependencies = dependencies,
                 )
             }
@@ -485,7 +549,7 @@ internal object BytecodeBeanIndexBuilder {
                 val methodConditions = (classConditions + method.annotations.conditionDescriptors())
                     .distinctBy { it.annotationName + it.attributes.toString() }
                 val methodScope = extractMethodScope(method.annotations)
-                
+
                 beans += BeanDefinition(
                     ownerClassName = className,
                     declarationName = method.name,
@@ -503,13 +567,17 @@ internal object BytecodeBeanIndexBuilder {
                     scope = methodScope,
                     lifecycleMethods = LifecycleMethodsInfo(), // @Bean 方法不需要生命周期方法
                     dependencies = emptyList(), // @Bean 方法的依赖通过参数注入，已在 injectionPointIndex 中
+                    // 运行时 ConfigurationScanner 只在 @Configuration 分支被调用，
+                    // 非 @Configuration 宿主上的 @Bean 方法永远不会被注册（bean-method-outside-configuration）
+                    factoryHostIsConfiguration = classAnnotations.hasAnnotation("Configuration"),
+                    factoryMethodReturnsVoid = method.returnType == "void",
                 )
             }
 
             val injections = mutableListOf<InjectionPointDefinition>()
             fields.filter { field ->
                 field.annotations.containsInjectionMetadata() &&
-                    (!field.isStatic || isKotlinObjectSingleton) &&
+                    (!field.isStatic || isKotlinObjectSingleton || field.fromCompanion) &&
                     field.name != "INSTANCE"
             }.forEach { field ->
                 injections += InjectionPointDefinition(
@@ -526,6 +594,7 @@ internal object BytecodeBeanIndexBuilder {
                     parameterIndex = null,
                     qualifierName = field.annotations.qualifierName(),
                     required = field.annotations.requiredFlag(defaultValue = true),
+                    lazy = field.annotations.lazyFlag(),
                 )
             }
             val missingInjectCandidates = fields.filter { field ->
@@ -548,6 +617,7 @@ internal object BytecodeBeanIndexBuilder {
                     parameterIndex = null,
                     qualifierName = null,
                     required = true,
+                    lazy = false,
                 )
             }
 
@@ -570,6 +640,7 @@ internal object BytecodeBeanIndexBuilder {
                         required = parameterAnnotations.requiredFlag(
                             defaultValue = constructor.annotations.requiredFlag(defaultValue = true),
                         ),
+                        lazy = parameterAnnotations.lazyFlag(),
                     )
                 }
             }
@@ -599,6 +670,7 @@ internal object BytecodeBeanIndexBuilder {
                         required = parameterAnnotations.requiredFlag(
                             defaultValue = method.annotations.requiredFlag(defaultValue = true),
                         ),
+                        lazy = parameterAnnotations.lazyFlag(),
                     )
                 }
             }
@@ -610,6 +682,8 @@ internal object BytecodeBeanIndexBuilder {
                 missingInjectCandidates = missingInjectCandidates,
                 componentBeanTypes = componentBeanTypes,
                 componentScans = scans,
+                aspectDefinitions = listOfNotNull(extractAspectDefinition()),
+                valueFields = extractValueFields(),
             )
         }
 
@@ -652,6 +726,7 @@ internal object BytecodeBeanIndexBuilder {
                 totalConstructorCount = allConstructors.size,
                 runtimeSelectedConstructorHasParameters = runtimeSelectedConstructorHasParameters,
                 runtimeSelectedConstructorHasNonNullableParameters = runtimeSelectedConstructorHasNonNullableParameters,
+                hasNoArgConstructor = allConstructors.any { it.parameterTypes.isEmpty() },
             )
         }
 
@@ -722,6 +797,82 @@ internal object BytecodeBeanIndexBuilder {
             )
         }
 
+        /**
+         * 生命周期方法签名明细（含参数个数与是否静态）。
+         * 运行时 Injector 以 `method.invoke(instance)` 零参硬调用，
+         * 带参方法（含 Kotlin suspend 编译出的 Continuation 参数）会抛 IllegalArgumentException 使 Bean 创建失败。
+         */
+        private fun extractLifecycleMethodDetails(): List<LifecycleMethodDetail> {
+            return methods.flatMap { method ->
+                sequence {
+                    if (method.annotations.hasAnnotation("PostConstruct")) {
+                        yield(LifecycleMethodDetail("PostConstruct", method.name, method.parameterTypes.size, method.isStaticMethod))
+                    }
+                    if (method.annotations.hasAnnotation("PreDestroy")) {
+                        yield(LifecycleMethodDetail("PreDestroy", method.name, method.parameterTypes.size, method.isStaticMethod))
+                    }
+                    if (method.annotations.hasAnnotation("PostEnable")) {
+                        yield(LifecycleMethodDetail("PostEnable", method.name, method.parameterTypes.size, method.isStaticMethod))
+                    }
+                }
+            }
+        }
+
+        /**
+         * 采集 @Aspect 切面类的 @Pointcut 命名切点与通知方法表达式，
+         * 供静态引擎复刻 AspectScanner/PointcutExpression 的运行时解析判定。
+         */
+        private fun extractAspectDefinition(): AspectDefinition? {
+            if (!classAnnotations.hasAnnotation("Aspect")) {
+                return null
+            }
+            val pointcutMethods = methods
+                .filter { it.annotations.hasAnnotation("Pointcut") }
+                .associate { method ->
+                    method.name to (method.annotations.findAnnotation("Pointcut")?.values?.get("value") as? String).orEmpty()
+                }
+            val adviceAnnotations = listOf("Before", "After", "Around", "AfterReturning", "AfterThrowing")
+            val advices = methods.flatMap { method ->
+                adviceAnnotations.mapNotNull { adviceName ->
+                    val expression = method.annotations.findAnnotation(adviceName)?.values?.get("value") as? String
+                        ?: return@mapNotNull null
+                    AspectAdviceDefinition(
+                        adviceAnnotation = adviceName,
+                        methodName = method.name,
+                        expression = expression,
+                        parameterTypes = method.parameterTypes,
+                    )
+                }
+            }
+            return AspectDefinition(
+                aspectClassName = className,
+                packageName = packageName,
+                sourceFile = sourceFile,
+                pointcutMethods = pointcutMethods,
+                advices = advices,
+            )
+        }
+
+        /**
+         * 采集 @Value 字段（表达式 + 目标类型）。
+         * 运行时 ValueResolver 用 PLACEHOLDER_REGEX.matchEntire 判定占位符：
+         * 包含 ${...} 但不满足整串匹配的表达式会被当作纯字面量注入。
+         */
+        private fun extractValueFields(): List<ValueFieldDefinition> {
+            return fields.mapNotNull { field ->
+                val expression = field.annotations.findAnnotation("Value")?.values?.get("value") as? String
+                    ?: return@mapNotNull null
+                ValueFieldDefinition(
+                    ownerClassName = className,
+                    fieldName = field.name,
+                    expression = expression,
+                    targetType = field.type,
+                    packageName = packageName,
+                    sourceFile = sourceFile,
+                )
+            }
+        }
+
         private fun extractDependencies(isBeanClass: Boolean): List<DependencyReference> {
             if (!isBeanClass) {
                 return emptyList()
@@ -747,7 +898,7 @@ internal object BytecodeBeanIndexBuilder {
             val isKotlinObjectSingleton = isKotlinObjectSingleton()
             fields.filter { field ->
                 field.annotations.containsInjectionMetadata() &&
-                    (!field.isStatic || isKotlinObjectSingleton) &&
+                    (!field.isStatic || isKotlinObjectSingleton || field.fromCompanion) &&
                     field.name != "INSTANCE"
             }.forEach { field ->
                 dependencies += DependencyReference(
@@ -785,6 +936,67 @@ internal object BytecodeBeanIndexBuilder {
                     name = field.name,
                     type = field.type,
                     descriptor = field.type, // 使用类型作为描述符
+                )
+            }
+        }
+
+        /** 方法清单（不含构造器与合成方法），供 AOP 静默失效规则组做方法级匹配 */
+        private fun extractMethodsInfo(): List<CollectedMethodInfo> {
+            return methods.filter { it.name != "<init>" }.map { method ->
+                CollectedMethodInfo(
+                    name = method.name,
+                    isPrivate = method.isPrivate,
+                    isStatic = method.isStaticMethod,
+                )
+            }
+        }
+
+        /** 把本类 $annotations 载体方法按属性名归并：`name$annotations` / `getName$annotations` / `isX` / `setX` */
+        fun carrierAnnotations(): Map<String, List<CapturedAnnotation>> {
+            val map = HashMap<String, MutableList<CapturedAnnotation>>()
+            for ((methodName, annotations) in annotationCarriers) {
+                val base = methodName.removeSuffix("\$annotations")
+                val candidates = mutableListOf(base)
+                for (prefix in listOf("get", "set", "is")) {
+                    if (base.length > prefix.length && base.startsWith(prefix) && base[prefix.length].isUpperCase()) {
+                        candidates += base.removePrefix(prefix).replaceFirstChar { it.lowercaseChar() }
+                    }
+                }
+                for (candidate in candidates) {
+                    map.getOrPut(candidate) { mutableListOf() }.addAll(annotations)
+                }
+            }
+            return map
+        }
+
+        /**
+         * H1/H3：把 $annotations 载体注解合并回同名字段。
+         * - 本类载体：Kotlin `var name` 的注解在 `getName$annotations` / `name$annotations` 上；
+         * - companion 载体（H3）：@JvmField companion 属性的 backing field 在外部类的静态字段上，
+         *   而注解载体在 Companion 类 —— 由 build() 第二阶段传入。
+         */
+        private fun mergeCarrierAnnotations(companionCarriers: Map<String, List<CapturedAnnotation>>) {
+            if (annotationCarriers.isEmpty() && companionCarriers.isEmpty()) {
+                return
+            }
+            val extraFor = HashMap<String, List<CapturedAnnotation>>()
+            carrierAnnotations().forEach { (propertyName, annotations) ->
+                extraFor[propertyName] = annotations
+            }
+            companionCarriers.forEach { (propertyName, annotations) ->
+                extraFor[propertyName] = (extraFor[propertyName].orEmpty() + annotations)
+                    .distinctBy { it.simpleName }
+            }
+            for (index in fields.indices) {
+                val field = fields[index]
+                val extra = extraFor[field.name].orEmpty()
+                    .filter { new -> field.annotations.none { it.simpleName == new.simpleName } }
+                if (extra.isEmpty()) {
+                    continue
+                }
+                fields[index] = field.copy(
+                    annotations = field.annotations + extra,
+                    fromCompanion = companionCarriers.containsKey(field.name),
                 )
             }
         }
@@ -840,8 +1052,25 @@ internal object BytecodeBeanIndexBuilder {
         }
     }
 
+    /**
+     * C-P2-21：注入元数据判定改用**注解 FQCN**，避免跨包同名注解（如第三方
+     * `com.foo.Inject` / `com.bar.Named` / `com.baz.Resource`）被简单名误命中，
+     * 从而把非 IoC 字段误当成注入点。
+     *
+     * 同时保留简单名回退：工程自带注解、或注解类未被扫描到时仍可识别，
+     * 避免因 FQCN 缺失而漏采集现有合法注入点。
+     */
     private fun List<CapturedAnnotation>.containsInjectionMetadata(): Boolean {
-        return hasAnnotation("Inject") || hasAnnotation("Named") || hasAnnotation("Resource")
+        return IOC_INJECTION_ANNOTATIONS.any { fqcn -> hasAnnotationFqcn(fqcn) } ||
+            (hasAnnotation("Inject") && !looksForeign(FOREIGN_INJECT_FQCNS)) ||
+            (hasAnnotation("Named") && !looksForeign(FOREIGN_NAMED_FQCNS)) ||
+            (hasAnnotation("Resource") && !looksForeign(FOREIGN_RESOURCE_FQCNS))
+    }
+
+    /** 同名但**非 Taboolib IoC** 的注解 FQCN 黑名单（跨包同名误命中防护） */
+    private fun List<CapturedAnnotation>.looksForeign(foreignFqcns: Set<String>): Boolean {
+        val annotation = firstOrNull { it.simpleName in setOf("Inject", "Named", "Resource") }
+        return annotation != null && annotation.className in foreignFqcns
     }
 
     private fun List<CapturedAnnotation>.beanClassStereotype(): String? {
@@ -874,8 +1103,33 @@ internal object BytecodeBeanIndexBuilder {
         return injectRequired ?: resourceRequired ?: defaultValue
     }
 
+    /**
+     * K6 修复：采集 @Lazy 注入标记。
+     *
+     * 陷阱 2：`@Lazy(val value: Boolean = true)` 的默认值为 true，但 `@Lazy(false)` 语义是
+     * 「**不延迟**」。因此必须读取注解的 `value` 属性（与运行时
+     * `ClassScanner.resolveInjectFields` 的 `lazy?.value == true` 逐字同源），
+     * **不能**只判断 `hasAnnotation("Lazy")` —— 否则会把 `@Lazy(false)` 误判为延迟，
+     * 静态侧过滤掉真正的环边 → 漏报真环。
+     *
+     * 注解缺省 value 时（Kotlin/Java 编译器不写出默认值）回退到 defaultValue=true，
+     * 与注解声明默认值一致。
+     */
+    private fun List<CapturedAnnotation>.lazyFlag(defaultValue: Boolean = false): Boolean {
+        val annotation = findAnnotation("Lazy") ?: return defaultValue
+        return annotation.values["value"] as? Boolean ?: true
+    }
+
     private fun List<CapturedAnnotation>.hasAnnotation(simpleName: String): Boolean {
         return any { it.simpleName == simpleName }
+    }
+
+    /**
+     * C-P2-21：按 FQCN 匹配注解，避免跨包同名注解（如第三方 `com.foo.Inject`）被简单名误命中。
+     * 注解全限定名以 `.` 结尾（包名后接简单名）。
+     */
+    private fun List<CapturedAnnotation>.hasAnnotationFqcn(fqcn: String): Boolean {
+        return any { it.className == fqcn }
     }
 
     private fun List<CapturedAnnotation>.findAnnotation(simpleName: String): CapturedAnnotation? {
