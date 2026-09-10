@@ -252,11 +252,44 @@ class TaboolibIocPlugin : Plugin<Project> {
         }
     }
 
+    /**
+     * 把 `verifyTaboolibIoc` 挂到打包任务（jar / assemble / build）之前。
+     *
+     * 应用顺序守护：
+     * - 若消费方在 `io.izzel.taboolib` **之后**才 apply 本插件，`afterEvaluate` 中
+     *   taboolib 的 relocate 可能尚未写回、或本插件的配置回调晚于打包任务注册时机，
+     *   此时 verify 会因「relocate 未生效」误报失败。
+     * - 因此这里不硬绑定任务依赖，而是通过 [project.afterEvaluate] 里的
+     *   `resolvedConfiguration` 判定：仅当自动接管**确实已生效**（backend 已 configured、
+     *   且非 subproject 跳过）时才挂依赖；否则在 verify 内部优雅跳过并打印诊断。
+     * - 同时显式要求 taboolib 插件已应用（否则给出明确错误而非静默通过）。
+     */
     private fun attachVerificationHooks(project: Project, verifyTask: TaskProvider<Task>) {
         val guardedTaskNames = setOf("jar", "assemble", "build")
+        // 通过 matching + configureEach 延迟到任务真正注册后再绑定，避免顺序敏感。
         project.tasks.matching { it.name in guardedTaskNames }.configureEach { task ->
-            task.dependsOn(verifyTask)
+            // 仅在自动接管已生效时绑定校验，避免「插件已应用但接管未生效」的误报阻断打包。
+            if (isTakeoverEffective(project)) {
+                task.dependsOn(verifyTask)
+            }
         }
+    }
+
+    /**
+     * 判断当前工程的 IoC 自动接管是否已实际生效（可安全执行 relocate 校验）。
+     * 读取 [Project.getExtensions] 上的 taboolibIoc 扩展配置与 taboolib 插件状态。
+     */
+    private fun isTakeoverEffective(project: Project): Boolean {
+        val extension = project.extensions.findByType(TaboolibIocExtension::class.java) ?: return false
+        if (!extension.autoTakeover.getOrElse(true)) {
+            return false
+        }
+        // 未应用 taboolib 插件时接管无法完成，交由 verify 内部给出明确错误。
+        if (!project.pluginManager.hasPlugin(TaboolibIocResolver.TABOOLIB_PLUGIN_ID)) {
+            return true
+        }
+        val resolver = TaboolibIocResolver(project, extension)
+        return !resolver.isTaboolibSubproject()
     }
 
     private fun backendFor(backendId: PackagingBackendId): PackagingBackend {

@@ -60,12 +60,30 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
         val sourceRoots = sourceDirectories.files.filter { it.exists() }.map { it.toPath() }
         val typeAliases = SourceTypeAliasIndexBuilder.build(sourceRoots)
         val index = BytecodeBeanIndexBuilder.build(scanRoots, sourceRoots)
-        val report = StaticDiagnosisEngine.analyze(
-            projectPath = project.path,
-            index = index,
-            typeAliases = typeAliases,
-            projectProperties = projectPropertiesInput.getOrElse(emptyMap()),
+
+        // D2 修复：ConditionalOnClass 的类名指向被扫描工程及其依赖里的类。
+        // 用扫描根构建 ClassLoader 供引擎探测，否则插件自身 ClassLoader 必然找不到这些类，
+        // 条件被错误判为 DISABLED，连锁误报 missing-bean。
+        //
+        // B-P1-09（K9 残余）：parent 改为 contextClassLoader（Gradle worker 的上下文加载器），
+        // 而非**插件** ClassLoader —— 后者会把消费方（被扫描工程）的同名类遮蔽，
+        // 使引擎探测到插件自带的旧版本/同 FQCN 类，得到错误的类存在性与层次结构判定。
+        // 注意：H5 泄漏已证伪（hasClass 只看 .isSuccess），这是**正确性**修正，不是泄漏修正。
+        val parentClassLoader = Thread.currentThread().contextClassLoader
+            ?: StaticDiagnosisEngine::class.java.classLoader
+        val scanClassLoader = java.net.URLClassLoader(
+            scanRoots.map { it.toUri().toURL() }.toTypedArray(),
+            parentClassLoader,
         )
+        val report = scanClassLoader.use {
+            StaticDiagnosisEngine.analyze(
+                projectPath = project.path,
+                index = index,
+                typeAliases = typeAliases,
+                projectProperties = projectPropertiesInput.getOrElse(emptyMap()),
+                scanClassLoader = it,
+            )
+        }
         val outputFile = reportFile.get().asFile.toPath()
         StaticAnalysisJsonWriter.write(report, outputFile)
 
@@ -159,6 +177,22 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
             "runtime-manual-bean-only" -> "如果依赖必须存在，请提供静态可见 Bean；否则保持 optional 注入。"
             "conditional-bean-only" -> "让条件成立，或提供一个不依赖条件的备用 Bean。"
             "missing-inject-annotation" -> "为该字段补充 @Inject/@Named/@Resource，或改为显式手动传入实例，不要直接裸引用 @Component Bean。"
+            "bean-no-resolvable-constructor" -> "在目标构造器上标注 @Inject，或保留一个无参构造器。"
+            "bean-type-not-instantiable" -> "移除接口/抽象类/枚举上的组件注解，或改为具体类。"
+            "unknown-bean-scope" -> "改用内置作用域，或在构建前通过 taboolib.ioc.knownScopes 声明自定义作用域。"
+            "lifecycle-method-signature-invalid" -> "把生命周期方法改为无参方法，需要外部资源请在 @PostConstruct 内通过依赖获取。"
+            "bean-method-outside-configuration" -> "把 @Bean 方法移入 @Configuration 类，或给返回类型标注组件注解。"
+            "bean-method-void-return" -> "@Bean 方法必须返回非 void 类型。"
+            "value-expression-unresolved-placeholder" -> "让 @Value 表达式为整串单一 \${...} 占位符，或改为纯字面量。"
+            "value-type-unsupported" -> "改用 String 或基本类型/包装类字段接收 @Value 值。"
+            "pointcut-expression-invalid" -> "修正为 execution(类模式.方法模式) 格式，或引用本切面已声明的 @Pointcut 方法名。"
+            "duplicate-bean-name" -> "重命名其中一个 Bean，或为注入点使用限定名称。"
+            "advice-signature-invalid" -> "按运行时契约修正通知方法签名：@Around 必须恰好 1 个 MethodInvocation 参数，@AfterReturning/@AfterThrowing 最多 1 个参数。"
+            "pointcut-target-not-found" -> "修正切点表达式的类名/方法名，或确认目标类在当前扫描范围内。"
+            "aop-private-method-pointcut" -> "把目标方法改为 public，或调整切点表达式指向 public 方法。"
+            "aop-static-method-pointcut" -> "把目标方法改为实例方法（JDK 动态代理只分派实例方法），或调整切点表达式。"
+            "aop-target-not-proxied" -> "为目标 Bean 抽取接口，或调整切点表达式。"
+            "aop-factory-bean-interface-return" -> "把 @Bean 方法返回类型改为具体实现类。"
             else -> "根据静态诊断报告修正对应 Bean 装配关系。"
         }
     }
@@ -174,6 +208,22 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
             "runtime-manual-bean-only" -> "Runtime Manual Bean Only"
             "conditional-bean-only" -> "Conditional Bean Only"
             "missing-inject-annotation" -> "Missing Inject Annotation"
+            "bean-no-resolvable-constructor" -> "Bean No Resolvable Constructor"
+            "bean-type-not-instantiable" -> "Bean Type Not Instantiable"
+            "unknown-bean-scope" -> "Unknown Bean Scope"
+            "lifecycle-method-signature-invalid" -> "Lifecycle Method Signature Invalid"
+            "bean-method-outside-configuration" -> "Bean Method Outside Configuration"
+            "bean-method-void-return" -> "Bean Method Void Return"
+            "value-expression-unresolved-placeholder" -> "Value Expression Unresolved Placeholder"
+            "value-type-unsupported" -> "Value Type Unsupported"
+            "pointcut-expression-invalid" -> "Pointcut Expression Invalid"
+            "duplicate-bean-name" -> "Duplicate Bean Name"
+            "advice-signature-invalid" -> "Advice Signature Invalid"
+            "pointcut-target-not-found" -> "Pointcut Target Not Found"
+            "aop-private-method-pointcut" -> "Aop Private Method Pointcut"
+            "aop-static-method-pointcut" -> "Aop Static Method Pointcut"
+            "aop-target-not-proxied" -> "Aop Target Not Proxied"
+            "aop-factory-bean-interface-return" -> "Aop Factory Bean Interface Return"
             else -> rule
         }
     }

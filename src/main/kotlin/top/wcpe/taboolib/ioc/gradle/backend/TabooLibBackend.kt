@@ -217,6 +217,15 @@ internal object TabooLibBackend : PackagingBackend {
         }
     }
 
+    /**
+     * B-P1-10：relocate 冲突检测必须与 TabooLib 引擎的**裸前缀**语义对齐。
+     *
+     * 引擎替换是对类名字符串做 `startsWith(source)`（**无包段边界**），因此：
+     *  · `source = top.wcpe.taboolib.ioc` 会连带替换 `top.wcpe.taboolib.iocx`（S8 字节码实测）；
+     *  · 任何**以其为前缀的兄弟包**手写 relocate 都会与自动规则互相越界覆盖。
+     * 此前按包段边界（`"."`）判定 → 静态报「无冲突」但引擎实际越界替换（漏报）。
+     * 现改为裸前缀判定，并专门覆盖 `<source>x` 这种「source 是其前缀的兄弟包」情况。
+     */
     private fun findRelocationConflict(
         existingRelocations: Map<String, String>,
         source: String,
@@ -227,12 +236,26 @@ internal object TabooLibBackend : PackagingBackend {
             return "检测到手写 relocate 与自动 IoC relocate 冲突：$source 已指向 $exactConflict，自动接管需要 $target。请删除手写配置或关闭 autoTakeover。"
         }
 
-        val nestedConflict = existingRelocations.entries.firstOrNull {
-            it.key != source && (source.startsWith("${it.key}.") || it.key.startsWith("$source.")) && it.value != target
+        val prefixConflict = existingRelocations.entries.firstOrNull { (existingSource, existingTarget) ->
+            existingSource != source &&
+                existingTarget != target &&
+                isRelocationPrefixOverlap(existingSource, source)
         }
-        if (nestedConflict != null) {
-            return "检测到与 IoC 包前缀重叠的手写 relocate：${nestedConflict.key} -> ${nestedConflict.value}，它会影响自动规则 $source -> $target。请收敛为一套 relocate 规则。"
+        if (prefixConflict != null) {
+            return "检测到与 IoC 包前缀重叠的手写 relocate：${prefixConflict.key} -> ${prefixConflict.value}，" +
+                "它会影响自动规则 $source -> $target（引擎按裸前缀替换，无包段边界）。请收敛为一套 relocate 规则。"
         }
         return null
+    }
+
+    /**
+     * 裸前缀重叠判定：任一方是另一方的前缀（含包段边界与兄弟包，如
+     * `top.wcpe.taboolib.ioc` 与 `top.wcpe.taboolib.iocx`）即视为重叠。
+     */
+    private fun isRelocationPrefixOverlap(first: String, second: String): Boolean {
+        if (first.isEmpty() || second.isEmpty()) {
+            return false
+        }
+        return first.startsWith(second) || second.startsWith(first)
     }
 }
