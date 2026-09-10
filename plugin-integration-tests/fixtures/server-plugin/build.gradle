@@ -3,7 +3,7 @@ plugins {
     id 'org.jetbrains.kotlin.jvm' version '1.9.25'
     id 'io.izzel.taboolib' version '2.0.36'
     id 'top.wcpe.taboolib.ioc'
-    id 'xyz.jpenilla.run-paper' version '2.3.1'
+    id 'xyz.jpenilla.run-paper' version '3.0.2'
 }
 
 group = 'fixture.server.plugin'

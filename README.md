@@ -149,13 +149,19 @@ taboolib.ioc.version=1.2.0-SNAPSHOT
 
 ## 目标包推导规则
 
-优先级从高到低：
+优先级从高到低（共 4 级，与 `TaboolibIocResolver.resolveTargetPackage` 实现一致）：
 
-1. `taboolibIoc.targetPackage`
-2. `gradle.properties` 中的 `taboolib.env.group`
-3. `project.group`
+1. `taboolibIoc.targetPackage`（DSL 显式声明）
+2. `gradle.properties` 中的 `taboolib.env.group`（Gradle 属性 `taboolib.env.group`）
+3. taboolib 扩展的 `taboolib { env { group = ... } }`（`taboolib.env.group`）
+4. `project.group`
 
-若三者都不可用，构建会失败并提示如何补齐配置。
+其中第 2、3 级都读取 `taboolib.env.group` 语义，但来源不同：第 2 级是 Gradle 项目属性
+（`gradle.properties` / `-P`），第 3 级是 taboolib 扩展对象上的 `env.group`。若三者都不可用，
+构建会失败并提示如何补齐配置。
+
+> 注：relocate 目标统一为 `<目标包根>.ioc`；若推导出的包名与源包 `top.wcpe.taboolib.ioc`
+> 存在前缀包含关系（含相等），则不会直接采用，而是追加 `.ioc` 后缀，避免自 relocate。
 
 ## 从手写 `taboo + relocate` 迁移
 
@@ -187,10 +193,44 @@ taboolibIoc {
 - `verifyTaboolibIoc`：在 `jar`、`assemble`、`build` 前验证自动接管是否已经生效。
 - `analyzeTaboolibIocBeans`：扫描当前模块编译产物，并联动扫描本地 project 依赖与 `taboo` 依赖产物，建立 Bean 索引、注入点索引和类型别名索引，输出静态诊断报告到 `build/reports/taboolib-ioc/static-diagnosis.json`。
 
-当前静态诊断已支持：
+当前静态诊断已支持（与 `StaticDiagnosisEngine` 现有规则一致）：
 
-- `error`：缺失 Bean、名称 Bean 不存在、名称 Bean 类型不兼容、多个 `@Primary`。
-- `warning`：多个候选且未限定、条件 Bean 无法被静态完全判定、依赖只能靠运行时手动 Bean 补足、`@ComponentScan` 可能排除某候选。
+- `error`：
+  - 缺失 Bean（`missing-bean`）、名称 Bean 不存在（`named-bean-not-found`）、名称 Bean 类型不兼容（`named-bean-type-mismatch`）；
+  - 多构造器且既无 `@Inject` 标注又无无参构造器（`bean-no-resolvable-constructor`）；
+  - 多构造器且运行时选中的构造器有参但无 `@Inject`/无参构造器时存在非空注入风险（`bean-runtime-null-injection-risk`）；
+  - 字段引用了可注入的 `@Component` Bean 类型但未声明 `@Inject`（`missing-inject-annotation`）；
+  - 接口/抽象类/枚举被声明为组件（`bean-type-not-instantiable`）；
+  - 未注册作用域（`unknown-bean-scope`，自定义作用域可通过项目属性 `taboolib.ioc.knownScopes` 逗号分隔声明）；
+  - 生命周期方法带参（`lifecycle-method-signature-invalid`，含 Kotlin suspend 编译出的 Continuation 参数）；
+  - `@Bean` 方法不在 `@Configuration` 宿主上（`bean-method-outside-configuration`）；
+  - `@Bean` 方法返回 void/Unit（`bean-method-void-return`）；
+  - `@Value` 表达式包含占位符但非整串单一占位符（`value-expression-unresolved-placeholder`，运行时会整串按字面量注入）；
+  - `@Value` 目标类型不受支持（`value-type-unsupported`，仅支持 String 与基本类型/包装类）；
+  - 切点表达式非法或引用未声明的 `@Pointcut`（`pointcut-expression-invalid`，运行时会导致插件 enable 失败）；
+  - `@Around` 通知签名非法（`advice-signature-invalid`，仅允许单个 `MethodInvocation` 参数，否则容器初始化切面直接失败）；
+  - 构造函数循环依赖，或跨作用域且无法解析的循环依赖（`circular-dependency-detected`）。
+- `warning`：
+  - 多个候选且未限定（`multiple-candidates-unqualified`）、多个 `@Primary` 冲突时的候选歧义（`multiple-primary-beans`）；
+  - 条件 Bean 无法被静态完全判定（`conditional-bean-only`）、依赖只能靠运行时手动 Bean 补足（`runtime-manual-bean-only`）；
+  - `@ComponentScan` 可能排除某候选（`component-scan-may-exclude`）；
+  - 多构造器且未显式标注 `@Inject constructor`，可能被容器选错构造（`bean-constructor-not-explicitly-injected`）；
+  - 由早期暴露解析、或已被接口类型 `@Lazy` 代理断开的可解析循环依赖（`circular-dependency-detected`）；
+  - `@RefreshScope` Bean 持有资源类型字段但缺少 `@PreDestroy`（`refresh-scope-missing-predestroy`）；
+  - `@AfterReturning`/`@AfterThrowing` 通知签名非法（`advice-signature-invalid`，运行时被静默吞掉、通知永久失效）；
+  - 切点目标类/方法在扫描范围内不存在（`pointcut-target-not-found`）；
+  - 切点仅命中 private 方法（`aop-private-method-pointcut`）、仅命中 static 方法（`aop-static-method-pointcut`）；
+  - 被通知的 Bean 未实现任何接口，JDK 动态代理无法包装（`aop-target-not-proxied`）；
+  - `@Bean` 工厂方法声明返回接口类型且被切面命中，运行时按声明类型收集接口必为空（`aop-factory-bean-interface-return`）；
+  - 同名 Bean（`duplicate-bean-name`，运行时先注册者胜出且取决于 jar 内类顺序）。
+
+  > 说明：同名 Bean 在运行时是被**静默跳过**（不报错、插件仍能启动），因此静态严重度对齐为 WARNING，避免误触 `failOnError` 阻断。
+- `info`：
+  - `@ThreadScope` Bean 在线程池环境需手动调用 `clearCurrentThread()` 防内存泄漏（`thread-scope-usage-warning`）。
+
+> 可选规则：设置项目属性 `taboolib.ioc.forbidComponentAnnotation=true` 时，检测到 `@Component` 会额外产生 `forbidden-component-annotation` 的 warning（用于团队约定「只用 `@Service`/`@Repository`/`@Inject`」）。
+
+同名类出现在多个扫描根（如同时存在于 compileClasspath 与 `taboo` 依赖）时会按「项目输出优先」去重，不产生假阳性。
 
 Bean 注解识别范围：
 
@@ -255,7 +295,8 @@ Bean 注解识别范围：
 
 - `example/groovy-consumer`：Groovy DSL 集成样例，完整展示 `build.gradle` 中 `taboolibIoc {}` 的 Groovy DSL 配置与中文注释；实际通过 `dependencyNotation` 消费预发布到 `mavenLocal` 的 `taboolib-ioc`，不直接使用本地 project。
 - `example/kotlin-consumer`：Kotlin DSL 集成样例，完整展示 `build.gradle.kts` 中 `taboolibIoc {}` 的 Kotlin DSL 配置与中文注释；实际通过 `dependency(...)` 消费预发布到 `mavenLocal` 的 `taboolib-ioc`，不直接使用本地 project。
-- `example/ioc-lib`：本地 IoC 库，用于执行 `publishToMavenLocal`，给两份示例模块提供依赖坐标。
+
+两个示例工程由 `example/settings.gradle.kts` 通过 `-Pexample.modules=<模块名>` 按需加载（默认不加载任何子模块），各自直接消费外部坐标。
 
 如果你希望只生成报告而不拦截构建，需要显式关闭质量门，例如：
 
@@ -272,18 +313,20 @@ taboolibIoc {
 .\gradlew.bat -p example :groovy-consumer:build -P "taboolib.ioc.analysis.fail-on-error=false" -P "taboolib.ioc.analysis.fail-on-warning=false"
 ```
 
-运行方式：
+运行方式（示例工程只消费已经发布到本地 Maven 仓库的 `taboolib-ioc` 坐标；
+该坐标需先在 IoC 本体仓库执行 `publishToMavenLocal` 生成）：
 
 ```powershell
 $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
-.\gradlew.bat -p example :ioc-lib:publishToMavenLocal -Pexample.modules=ioc-lib "-Dmaven.repo.local=$exampleLocalRepo"
+# 先发布 IoC 本体（在 taboolib-ioc 仓库根目录执行，指向隔离的本地仓库）
+# .\gradlew.bat publishToMavenLocal "-Dmaven.repo.local=$exampleLocalRepo"
 .\gradlew.bat -p example :groovy-consumer:build -Pexample.modules=groovy-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
 .\gradlew.bat -p example :kotlin-consumer:build -Pexample.modules=kotlin-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
 .\gradlew.bat -p example :groovy-consumer:analyzeTaboolibIocBeans -Pexample.modules=groovy-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
 .\gradlew.bat -p example :kotlin-consumer:analyzeTaboolibIocBeans -Pexample.modules=kotlin-consumer "-Dmaven.repo.local=$exampleLocalRepo" --refresh-dependencies
 ```
 
-其中 `:groovy-consumer:build` 和 `:kotlin-consumer:build` 前都需要先执行 `:ioc-lib:publishToMavenLocal`，并配合 `-Pexample.modules=...` 只加载当前需要的 example 模块；同时通过 `Join-Path (Resolve-Path "example").Path ".m2-local"` 生成隔离的本地 Maven 仓库绝对路径，避免与全局 `~/.m2` 中已有的同名 SNAPSHOT 冲突；追加 `--refresh-dependencies` 是为了让 Gradle 重新读取刚发布的本地 SNAPSHOT。
+其中 `:groovy-consumer:build` 和 `:kotlin-consumer:build` 前都需要先在 IoC 本体仓库执行 `publishToMavenLocal`（产出 `top.wcpe.taboolib.ioc:taboolib-ioc:<版本>` 坐标），并配合 `-Pexample.modules=...` 只加载当前需要的 example 模块；同时通过 `Join-Path (Resolve-Path "example").Path ".m2-local"` 生成隔离的本地 Maven 仓库绝对路径，避免与全局 `~/.m2` 中已有的同名 SNAPSHOT 冲突；追加 `--refresh-dependencies` 是为了让 Gradle 重新读取刚发布的本地 SNAPSHOT。
 
 构建成功后，可检查：
 

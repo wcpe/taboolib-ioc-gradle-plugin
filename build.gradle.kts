@@ -18,11 +18,18 @@ val projectScmConnection = "scm:git:https://github.com/wcpe/taboolib-ioc-gradle-
 val projectScmDeveloperConnection = "scm:git:ssh://git@github.com/wcpe/taboolib-ioc-gradle-plugin.git"
 
 repositories {
+    // 顺序敏感（本机代理环境实测结论，勿随意调整）：
+    // - mavenLocal() 里的 ~/.m2 存在「只有 POM、没有主 jar」的半落盘模块（如 org.jacoco.agent:0.8.12）。
+    //   Maven Resolver 的 _remote.repositories 会把该模块「钉」到来源仓库（central），
+    //   于是 Gradle 认定该模块应由 central 提供、直接放弃 Gradle 本地缓存，
+    //   而本机代理对 repo.maven.apache.org 的 TLS 握手会被远端重置 → 解析失败。
+    // - 因此把「可达的全量镜像」放在 mavenLocal() 之前，让网络仓库先行兜底。
+    maven("https://maven.aliyun.com/repository/public")
+    maven("https://maven.wcpe.top/repository/maven-public/")
     mavenLocal()
     mavenCentral()
     gradlePluginPortal()
     maven("https://repo.tabooproject.org/repository/releases/")
-    maven("https://maven.wcpe.top/repository/maven-public/")
 }
 
 dependencies {
