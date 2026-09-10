@@ -351,6 +351,108 @@ class BytecodeBeanIndexBuilderUnitTest {
         assertTrue(namedBean.dependencies.any { it.targetType == "fixture.deps.ServiceC" && it.targetBeanName == "myServiceC" })
     }
 
+    // ==================== C-P2-03：采集层字段直接断言 ====================
+
+    /**
+     * C-P2-03：**直接**断言 `isStatic` 判定 —— 普通（非 Kotlin object、非 companion）类上的
+     * `static` 注入字段必须被过滤掉，仅保留实例字段。
+     *
+     * 运行时 `FieldInjector.injectFields` 对实例调用 `field.set(instance, value)`，
+     * 普通类上没有 object 单例、static 字段无归属实例；采集层必须与运行时一致地跳过它，
+     * 否则会产生「静态字段被当成可注入点」的假阳性。
+     */
+    @Test
+    fun filtersStaticFieldsOnPlainClassesButKeepsInstanceFields() {
+        val classesDir = compileJavaSources(
+            rootDir = tempDir.resolve("staticfilter"),
+            sources = mapOf(
+                "fixture/scan/annotations/Bean.java" to simpleAnnotationSource("Bean", "TYPE"),
+                "fixture/scan/annotations/Inject.java" to simpleAnnotationSource("Inject", "FIELD"),
+                "fixture/staticfilter/StaticFieldBean.java" to """
+                    package fixture.staticfilter;
+
+                    import fixture.scan.annotations.Bean;
+                    import fixture.scan.annotations.Inject;
+
+                    @Bean
+                    class StaticFieldBean {
+                        @Inject
+                        static Object staticDep;
+
+                        @Inject
+                        Object instanceDep;
+                    }
+                """.trimIndent(),
+            ),
+        )
+
+        val index = BytecodeBeanIndexBuilder.build(listOf(classesDir))
+        val fieldPoints = index.injectionPointIndex.filter {
+            it.ownerClassName == "fixture.staticfilter.StaticFieldBean" &&
+                it.kind == InjectionPointKind.FIELD
+        }
+        val names = fieldPoints.map { it.declarationName }
+
+        assertTrue(names.contains("instanceDep"), "普通类的实例 @Inject 字段必须被采集")
+        assertTrue(
+            !names.contains("staticDep"),
+            "普通类（非 Kotlin object / 非 companion）上的 static @Inject 字段必须被过滤（isStatic 直接判定）",
+        )
+    }
+
+    /**
+     * C-P2-03：**直接**断言嵌套类不被跳过 —— 顶层类内的静态嵌套类若带 @Bean，应正常采集。
+     *
+     * （匿名类 / 纯数字后缀合成类才应跳过；有名字的嵌套类必须保留。）
+     */
+    @Test
+    fun collectsNamedNestedClassesAndSkipsAnonymousOnes() {
+        val classesDir = compileJavaSources(
+            rootDir = tempDir.resolve("nested"),
+            sources = mapOf(
+                "fixture/scan/annotations/Bean.java" to simpleAnnotationSource("Bean", "TYPE"),
+                "fixture/nested/Outer.java" to """
+                    package fixture.nested;
+
+                    import fixture.scan.annotations.Bean;
+
+                    class Outer {
+                        @Bean
+                        static class NestedBean {
+                            Object dep;
+                        }
+
+                        @Bean
+                        static class AnonymousFactory {
+                            static Runnable make() {
+                                return new Runnable() {
+                                    @Override
+                                    public void run() {}
+                                };
+                            }
+                        }
+                    }
+                """.trimIndent(),
+            ),
+        )
+
+        val index = BytecodeBeanIndexBuilder.build(listOf(classesDir))
+        val classNames = index.classIndex.map { it.className }
+
+        assertTrue(
+            classNames.contains("fixture.nested.Outer${'$'}NestedBean"),
+            "有名字的静态嵌套类必须被采集（H2 修复：不得因含 '\$' 被整体跳过）",
+        )
+        assertTrue(
+            index.beanIndex.any { it.ownerClassName == "fixture.nested.Outer${'$'}NestedBean" },
+            "嵌套 @Bean 类必须进入 beanIndex",
+        )
+        assertTrue(
+            classNames.none { it == "fixture.nested.Outer${'$'}AnonymousFactory${'$'}1" },
+            "匿名类（纯数字末段）必须被跳过，不得进入 classIndex",
+        )
+    }
+
     private fun simpleAnnotationSource(name: String, targets: String): String {
         val targetList = targets.split(',')
             .map { it.trim() }
