@@ -16,7 +16,7 @@
 
 ```groovy
 plugins {
-    id 'io.izzel.taboolib' version '2.0.36'
+    id 'io.izzel.taboolib' version '2.0.38-wcpe.1'
     id 'top.wcpe.taboolib.ioc' version '0.0.6'
 }
 ```
@@ -28,7 +28,7 @@ Groovy DSL：
 ```groovy
 plugins {
     id 'org.jetbrains.kotlin.jvm' version '1.9.25'
-    id 'io.izzel.taboolib' version '2.0.36'
+    id 'io.izzel.taboolib' version '2.0.38-wcpe.1'
     id 'top.wcpe.taboolib.ioc'
 }
 
@@ -50,7 +50,7 @@ Kotlin DSL：
 ```kotlin
 plugins {
     kotlin("jvm") version "1.9.25"
-    id("io.izzel.taboolib") version "2.0.36"
+    id("io.izzel.taboolib") version "2.0.38-wcpe.1"
     id("top.wcpe.taboolib.ioc") version "0.0.6"
 }
 
@@ -256,7 +256,7 @@ Bean 注解识别范围：
 - Java：17
 - Gradle Wrapper：8.14.4
 - Kotlin JVM Plugin：1.9.25
-- `io.izzel.taboolib` Gradle 插件：2.0.36
+- `io.izzel.taboolib` Gradle 插件：2.0.38-wcpe.1
 
 验证方式：
 
