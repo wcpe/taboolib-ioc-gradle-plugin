@@ -1,15 +1,20 @@
 plugins {
     id 'java'
     id 'org.jetbrains.kotlin.jvm' version '1.9.25'
-    id 'io.izzel.taboolib' version '2.0.36'
+    id 'io.izzel.taboolib' version '2.0.38-wcpe.1'
     id 'top.wcpe.taboolib.ioc'
-    id 'xyz.jpenilla.run-paper' version '3.0.2'
+    id 'top.wcpe.mc-testkit' version '0.8.0'
 }
 
 group = 'fixture.server.plugin'
 version = '1.0.0'
 
 repositories {
+    // 顺序敏感（本机代理环境实测结论）：
+    // - TabooLib 2.0.38-wcpe.1 / mc-testkit 0.8.0 / harness-core 0.1.0 只在 wcpe maven-releases，
+    //   maven-public 不聚合（实测 404），故显式加 releases 并前置；
+    // - mavenLocal() 可能被 _remote.repositories 钉住半落盘模块，故后移，让可达镜像先行兜底。
+    maven { url = uri('https://maven.wcpe.top/repository/maven-releases/') }
     mavenLocal()
     mavenCentral()
     maven { url = uri('https://maven.wcpe.top/repository/maven-public/') }
@@ -24,6 +29,12 @@ java {
 
 dependencies {
     compileOnly 'top.wcpe.taboolib.ioc:taboolib-ioc:1.2.0-SNAPSHOT'
+    // 桩写结果文件用（McTestkitEnv / McTestkitResultWriter，纯 JDK 静态工具类）。
+    // **必须走 taboo 配置**：TabooLib 只把 `taboo` 配置的依赖内联进最终插件 jar，
+    // `implementation` 配置的不会被内联（实证：implementation 时 jar 内无 harness 包 → 运行期 NoClassDefFoundError）。
+    // 不继承 McTestkitHarnessPlugin —— 本 fixture 是 TabooLib 引擎驱动的 bean 工程，
+    // 无 JavaPlugin 主类，继承会引入第二个 JavaPlugin 与 TabooLib 主类冲突。
+    taboo 'top.wcpe.mc:harness-core:0.1.0'
 }
 
 taboolib {
@@ -48,7 +59,42 @@ taboolibIoc {
     analysisFailOnWarning = false
 }
 
-tasks.runServer {
-    minecraftVersion('1.20.4')
-    jvmArgs('-Dcom.mojang.eula.agree=true')
+// 被测插件 jar 由标准 `jar` 任务产出：TabooLib 插件把 taboolibMainTask 的 inJar 接到 jar.archiveFile，
+// 并对 jar 做 relocate / env 注入（平台内联）——最终可运行插件 jar 即 jar 任务输出。
+// 注意：不能用 taboolibMainTask.outputs.files（该任务无 @OutputFile，配置期为空 → singleFile 抛错）。
+// 在脚本作用域预先求值成绝对路径字符串（配置期即可，archiveFileName 由约定即时得出）。
+def defaultPluginJarPath = tasks.named('jar', org.gradle.jvm.tasks.Jar)
+    .get().archiveFile.get().asFile.absolutePath
+// 允许经 MC_TESTKIT_E2E_PLUGIN_UNDER_TEST_JAR 覆盖（CI/GradleRunner 注入绝对路径）。
+def envPluginJarPath = System.getenv('MC_TESTKIT_E2E_PLUGIN_UNDER_TEST_JAR')
+def effectivePluginJarPath = (envPluginJarPath != null && !envPluginJarPath.trim().isEmpty())
+    ? envPluginJarPath.trim()
+    : defaultPluginJarPath
+
+mcTestkit {
+    // Groovy 侧：mc-testkit DSL 的 lambda 是 Kotlin 带接收者函数（Function1<BackendSpec, Unit>），
+    // Groovy 不支持 Kotlin `receiver` 语义，会把 BackendSpec 作为**单个参数**传入，
+    // 故块内必须经 `it` 访问 BackendSpec 属性（直接写 `platform = paper` 会落到外层扩展 → unknown property）。
+    backend('s1') {
+        it.platform = it.paper
+        it.version = '1.20.1'
+        it.port = 25566
+    }
+    // 无 bot：仅 prepare + verify（骨架桩写结果文件即判定）。
+    // Kotlin 默认参数对 Groovy 不可见，故显式传空闭包（scenario(name, configure)）。
+    scenario('smoke') { }
+    dependencies {
+        // 双轨写法（U2 C1）：默认取本工程 jar 产物绝对路径（配置期已自解析），env 可覆盖。
+        // 注意：mc-testkit 的 pluginUnderTest 解析为裸 File(path)，相对路径按 Gradle CWD 解析，故必须绝对路径。
+        // 同样地，Kotlin 带接收者 lambda 在 Groovy 里以 `it` 传入 DependenciesSpec。
+        it.pluginUnderTest = effectivePluginJarPath
+    }
+}
+
+// 保证 :e2eSmoke 先产出被测插件 jar（verify 的前置是 prepare）。
+// mc-testkit 在自身 apply 回调里才注册 e2e 任务，故此处用 afterEvaluate 延后接线。
+afterEvaluate {
+    tasks.matching { it.name in ['e2eSmoke', 'prepareE2eSmoke'] }.configureEach {
+        dependsOn 'jar'
+    }
 }
