@@ -21,12 +21,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      # Gradle 守护进程与嵌套构建必须跑在 JDK 21+：被测 fixture 经 GradleRunner 嵌套构建，
+      # 其依赖 mc-testkit:0.8.0 的 Gradle 模块元数据要求 JVM 21+（Java 17 会在配置期报
+      # "Dependency requires at least JVM runtime version 21"）。
+      # 插件本体仍用 Java 17 toolchain 编译，故 17 也要装（GH runner 的 /usr/lib/jvm 会被
+      # Gradle 自动探测；此处显式装一遍更稳）。后装的 21 成为 JAVA_HOME。
+      - name: Set up Java 17 (compile toolchain)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
+
+      - name: Set up Java 21 (Gradle daemon / nested build JVM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
