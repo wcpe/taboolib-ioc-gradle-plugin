@@ -31,8 +31,12 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Run all tests
-        run: ./gradlew ciTest --no-daemon --stacktrace
+      - name: Build and run all tests
+        # `ciTest` 只跑 test + 覆盖率门禁 + 插件集成测试，并不产出构建产物（jar）；
+        # 因此额外并入 `build`（= assemble + check）以保证「构建 + 测试」两件事都发生。
+        # `build` 的 check 已依赖 jacocoTestCoverageVerification，与 ciTest 的依赖在同一
+        # Gradle 调用中会被去重，覆盖率门禁只运行一次，不会重复执行。
+        run: ./gradlew build ciTest --no-daemon --stacktrace
 
       - name: Publish current plugin to isolated Maven local
         run: |
