@@ -230,6 +230,8 @@ taboolibIoc {
 
 > 可选规则：设置项目属性 `taboolib.ioc.forbidComponentAnnotation=true` 时，检测到 `@Component` 会额外产生 `forbidden-component-annotation` 的 warning（用于团队约定「只用 `@Service`/`@Repository`/`@Inject`」）。
 
+> **AOP 静态诊断规则组**（本版本新增）：`pointcut-target-not-found`、`aop-private-method-pointcut`、`aop-static-method-pointcut`、`aop-target-not-proxied`、`aop-factory-bean-interface-return`（均为 WARNING），以及 `advice-signature-invalid`（`@Around` 为 ERROR，`@AfterReturning`/`@AfterThrowing` 为 WARNING）。这类问题在运行时要么静默失效、要么导致插件 `enable` 失败，编译期即可拦截。
+
 同名类出现在多个扫描根（如同时存在于 compileClasspath 与 `taboo` 依赖）时会按「项目输出优先」去重，不产生假阳性。
 
 Bean 注解识别范围：
@@ -253,10 +255,12 @@ Bean 注解识别范围：
 
 当前仓库内已经验证通过的组合：
 
-- Java：17
+- Java：17（插件本体以 Java 17 toolchain 编译）
 - Gradle Wrapper：8.14.4
 - Kotlin JVM Plugin：1.9.25
 - `io.izzel.taboolib` Gradle 插件：2.0.38-wcpe.1
+
+> **构建/测试需 JDK 21+**：插件本体仍以 Java 17 toolchain 编译，但运行构建的 Gradle 守护进程与嵌套 `GradleRunner` 构建需 JDK 21+。被测 fixture 依赖的 `mc-testkit` 模块元数据要求 JVM 21+，在 Java 17 下会在配置期直接报 `Dependency requires at least JVM runtime version 21`（CI 因此同时安装 17 与 21，后装的 21 成为 `JAVA_HOME`）。
 
 验证方式：
 
