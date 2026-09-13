@@ -4,6 +4,34 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.0.7] - 2026-09-13
+
+### 新增
+
+- 静态诊断新增 AOP 规则组（5 条）：
+  - `aop-target-not-proxied`：被通知的 Bean 未实现任何接口，JDK 动态代理无法包装（WARNING）；
+  - `aop-factory-bean-interface-return`：`@Bean` 工厂方法声明返回接口类型且被切面命中，运行时按声明类型收集接口必为空（WARNING）；
+  - `advice-signature-invalid`：通知签名非法（`@Around` 为 ERROR，`@AfterReturning` / `@AfterThrowing` 为 WARNING）；
+  - `pointcut-target-not-found`：切点目标类/方法在扫描范围内不存在（WARNING）；
+  - `aop-private-method-pointcut`：切点仅命中 private 方法（WARNING）。
+- 新增 `aop-static-method-pointcut`：切点仅命中 static 方法时告警（WARNING）。
+
+### 修复
+
+- 修复 3 个 Kotlin 元数据缺陷（`$annotations` 载体被 `ACC_SYNTHETIC` 一刀切过滤、含 `$` 的嵌套类被整体跳过、`companion object` 注入点跨类不可见），静态规则召回率此前因之减半。
+- 修复静态诊断引擎规则缺陷：`@Lazy` 断边判据改为「`lazy` 且依赖类型为接口」（此前完全忽略 `@Lazy`，对已断开的环误报 ERROR，而 `failOnError` 默认开启等于误阻断正确工程）；修正 Kotlin `typealias` 漏判；`duplicate-bean-name` 由 ERROR 降为 WARNING。
+- 修复失效的测试门禁：`PaperServerPluginLoadTest` 此前 catch 掉 `UnexpectedBuildFailure` 后仅断言输出含 PASS，「服务端先打印 PASS、随后崩溃」的窄窗口仍判绿；现构建非零退出即判失败。
+- 修复 verify 挂载（新增 `isTakeoverEffective` 守护，避免「插件在 taboolib 之后 apply」时误报阻断打包）、relocate 目标包判据（消除自 relocate 与父包收窄）、诊断采集 ClassLoader 遮蔽。
+
+### 变更
+
+- 补齐静态引擎与采集层测试：此前 3 个测试文件从未纳入 git（`git ls-files` 为空），引擎约 15 条规则名义上有测试、实际零门禁，现入库（`:test` 142 tests / 0 failures）。
+- 依赖仓库顺序修正（阿里云 / wcpe 镜像前置于 `mavenLocal()`），修复 `~/.m2` 半落盘模块导致的 jacoco 工具链解析死锁。
+- `io.izzel.taboolib` 插件统一至 `2.0.38-wcpe.1`，并将 wcpe maven-releases 前置。
+- CI 提交触发即构建 + 测试（`build ciTest`），覆盖率门禁在同一 Gradle 调用中去重只运行一次。
+- 构建 JVM 升至 JDK 21（嵌套 `GradleRunner` 构建需 JDK 21+ 才能解析 mc-testkit；插件本体仍以 Java 17 toolchain 编译）。
+- E2E fixture 用 `taboo` 配置接入 harness-core，`PaperServerPluginLoadTest` 改判 mc-testkit 结果文件（`:runServer` → `:e2eSmoke`，判定真源为 `smoke.properties` 的 `status=PASS`）。
+
 ## [0.0.6] - 2026-05-28
 
 ### 新增
