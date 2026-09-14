@@ -1,0 +1,290 @@
+name: Release
+
+# 发版语义：严格「主干分支 master 带 tag 才发布」，tag 驱动 + CI 执行。
+# 只有推送到远端的 vX.Y.Z tag（或手动 dispatch 指定该 tag）才会触发本工作流。
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布标签（如 v0.0.7）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 发版前置守卫：tag 必须落在默认分支 master 上 ─────────────────────────
+  # 守卫不通过 → 本 job 失败 → 下游 test / build-and-release 因 needs 不启动 →
+  # 整条工作流失败，绝不建 Release。
+  #
+  # 两条触发路径都要覆盖：
+  #   push tag           → 触发引用即 tag，GITHUB_SHA 就是被标记的提交；
+  #   workflow_dispatch  → 输入只是字符串 tag，本地未必存在该 ref，需先显式 fetch
+  #                        再用 rev-parse 解析成提交，统一走同一套判定。
+  verify-tag:
+    name: Verify tag is on master
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 需要完整历史，git merge-base 才能判断祖先关系
+          fetch-depth: 0
+
+      - name: Verify tag points to a commit on master
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          TRIGGER_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # 1) 解析本次要发布的 tag：dispatch 取输入，push 取触发引用名
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG="${TRIGGER_REF_NAME}"
+          fi
+
+          # 2) tag 名格式校验：必须形如 v<主>.<次>.<修订>，与触发条件 v*.*.* 一致，
+          #    避免 workflow_dispatch 传入分支名 / 非版本串后静默发出错误版本。
+          if ! printf '%s' "${TAG}" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::非法版本 tag '${TAG}'：正式发版要求 tag 形如 v<主>.<次>.<修订>（例如 v0.0.7）。"
+            exit 1
+          fi
+
+          # 3) 显式取齐引用：origin/master 与目标 tag。
+          #    fetch-depth:0 通常已包含两者，但 workflow_dispatch 时目标 tag 可能是
+          #    克隆之后才由他人推送的，故显式再取一次以保证其存在（取不到即报错，不静默）。
+          git fetch --no-tags origin "refs/heads/master:refs/remotes/origin/master"
+          git fetch --no-tags --force origin "refs/tags/${TAG}:refs/tags/${TAG}" \
+            || { echo "::error::无法获取 tag '${TAG}'，请确认该 tag 已推送到远端。"; exit 1; }
+
+          # 4) 解析 tag 指向的提交（^{commit} 会剥离 annotated tag，拿到真实提交）
+          TAG_COMMIT=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          echo "目标 tag：${TAG}"
+          echo "tag 指向提交：${TAG_COMMIT}"
+          echo "master 当前提交：$(git rev-parse refs/remotes/origin/master)"
+
+          # 5) 判定：tag 指向的提交必须是 master 的祖先（含 master 自身）。
+          #    --is-ancestor 返回 0 = 是祖先（通过），返回 1 = 不是祖先（拦截）。
+          if git merge-base --is-ancestor "${TAG_COMMIT}" refs/remotes/origin/master; then
+            echo "::notice::tag ${TAG} 位于 master 上，允许发版。"
+          else
+            echo "::error::tag ${TAG} 未落在 master 上。正式发版要求 tag 必须打在 master 分支的提交上；请先将改动合并到 master、再在 master 的提交上打 tag。"
+            exit 1
+          fi
+
+  # ── 测试门禁：不通过则不发版 ─────────────────────────────────────────────
+  test:
+    name: Test gate (must pass before release)
+    runs-on: ubuntu-latest
+    needs: verify-tag
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # push tag 时默认检出该 tag；dispatch 时须显式指定输入的 tag，
+          # 确保「被测提交」就是「将被发布的提交」。
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      # Gradle 守护进程与嵌套构建必须跑在 JDK 21+：被测 fixture 经 GradleRunner 嵌套构建，
+      # 其依赖 mc-testkit 的 Gradle 模块元数据要求 JVM 21+（Java 17 会在配置期报
+      # "Dependency requires at least JVM runtime version 21"）。
+      # 插件本体仍用 Java 17 toolchain 编译，故 17 也要装。后装的 21 成为 JAVA_HOME。
+      - name: Set up Java 17 (compile toolchain)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Java 21 (Gradle daemon / nested build JVM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # 发版门禁：构建 + 全量测试，任一失败即阻断发布。
+      - name: Build and run all tests
+        run: ./gradlew build ciTest --no-daemon --stacktrace
+
+  # ── 构建并发布 Release ───────────────────────────────────────────────────
+  # 只建 GitHub Release 并附插件 jar；Maven 发布仍由维护者人工执行（本工作流绝不 publish 到远端）。
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 完整历史：既用于取 tag，也用于生成 CHANGELOG 对比链接
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      # ── 解析版本号（从 tag 推导，不硬编码）───────────────────────────────
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          # 去掉前缀 v，得到纯版本号（如 0.0.7）
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved: tag=${TAG}, version=${VERSION}"
+
+      # ── 写入构建版本号（保证 jar 文件名 == tag 版本，避免错配）────────────
+      - name: Set version in gradle.properties
+        run: |
+          sed -i "s/^version=.*/version=${{ steps.version.outputs.version }}/" gradle.properties
+          cat gradle.properties
+
+      - name: Set up Java 17 (compile toolchain)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Java 21 (Gradle daemon / nested build JVM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # 校验 gradle-wrapper.jar 的 checksum，防止分发被篡改
+          validate-wrappers: true
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # 测试已由独立 test 门禁 job 把关，此处只出产物
+      - name: Build artifacts
+        run: ./gradlew build -x test --no-daemon
+
+      # ── 收集产物（含 jar 内容校验）──────────────────────────────────────
+      - name: Collect artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          MAIN_JAR="build/libs/taboolib-ioc-gradle-plugin-${VERSION}.jar"
+          SOURCES_JAR="build/libs/taboolib-ioc-gradle-plugin-${VERSION}-sources.jar"
+
+          # 期望产物必须齐备（jar 由 build 产出，sources 由 withSourcesJar() 产出）。
+          for jar in "${MAIN_JAR}" "${SOURCES_JAR}"; do
+            if [ ! -f "${jar}" ]; then
+              echo "::error::期望的产物不存在：${jar}"
+              exit 1
+            fi
+          done
+
+          # 主 jar 必须含 class 条目，杜绝「空壳 jar」被当成正式产物发布。
+          class_count=$(unzip -l "${MAIN_JAR}" | grep -c '\.class$' || true)
+          if [ "${class_count}" -eq 0 ]; then
+            echo "::error::主 jar 不含任何 class 条目：${MAIN_JAR}"
+            exit 1
+          fi
+          echo "OK (${class_count} classes): ${MAIN_JAR}"
+
+          # 按换行分隔输出：softprops/action-gh-release 的 files 以换行或逗号切分多个 glob，
+          # 空格分隔串会被当成「单个不存在的文件名」→ 建出 Release 却 0 资产。
+          # 多行 value 必须以 <<DELIM ... DELIM 包裹，否则在首个换行处被截断。
+          {
+            echo "artifacts<<__ARTIFACTS_EOF__"
+            printf '%s\n' "${MAIN_JAR}"
+            printf '%s\n' "${SOURCES_JAR}"
+            echo "__ARTIFACTS_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          echo "Found artifacts:"
+          printf '%s\n' "${MAIN_JAR}"
+          printf '%s\n' "${SOURCES_JAR}"
+
+      # ── 生成 Release notes：Maven 坐标块 + CHANGELOG 段落 + 对比链接 ──────
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          DATE=$(date -u +"%Y-%m-%d")
+
+          # 从 CHANGELOG.md 抽取 "## [<version>]" 起、到下一个一级版本段之前的正文。
+          # 用 index() 前缀判定（而非正则），避免 [ ] 等正则元字符与 shell/awk 多层转义踩坑。
+          # （CHANGELOG 已用反引号包裹 @Bean/@Lazy 等，天然不会触发 GitHub 用户提及。）
+          NOTES=$(awk -v hdr="## [${VERSION}]" '
+            index($0, hdr) == 1 { inblock=1 }
+            inblock && index($0, "## [") == 1 && index($0, hdr) != 1 { exit }
+            inblock { print }
+          ' CHANGELOG.md)
+
+          if [ -z "${NOTES}" ]; then
+            echo "::warning::CHANGELOG.md 中未找到 [${VERSION}] 段落，将以占位段替代。"
+            NOTES="## [${VERSION}] - ${DATE}"$'\n\n'"_(CHANGELOG 尚未更新)_"
+          fi
+
+          # 上游版本 tag，用于生成对比链接（取版本号排序后的上一个 v*.*.* tag）。
+          PREV_TAG=$(git tag --list 'v*.*.*' --sort=-version:refname | grep -v "^${TAG}$" | head -n 1 || true)
+
+          {
+            echo "## Maven 坐标"
+            echo ""
+            echo "接入方式（Plugin Marker）："
+            echo ""
+            echo '```groovy'
+            echo "plugins {"
+            echo "    id 'top.wcpe.taboolib.ioc' version '${VERSION}'"
+            echo "}"
+            echo '```'
+            echo ""
+            echo "- Plugin Marker：\`top.wcpe.taboolib.ioc:top.wcpe.taboolib.ioc.gradle.plugin:${VERSION}\`"
+            echo "- 插件本体：\`top.wcpe.taboolib.ioc:taboolib-ioc-gradle-plugin:${VERSION}\`"
+            echo "- Maven 仓库：\`https://maven.wcpe.top/repository/maven-releases/\`"
+            echo ""
+            echo "> 说明：本 Release 仅提供 GitHub 产物（插件 jar / 源码 jar）；Maven 仓库发布由维护者手动执行。"
+            echo ""
+            echo "---"
+            echo ""
+            echo "${NOTES}"
+            echo ""
+            if [ -n "${PREV_TAG}" ]; then
+              echo "**完整变更**：[\`${PREV_TAG}\` → \`${TAG}\`](https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG})"
+            fi
+          } > RELEASE_NOTES.md
+
+          cat RELEASE_NOTES.md
+
+      # ── 发布 Release（仅 GitHub，不涉及远端 Maven 发布）──────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "v${{ steps.version.outputs.version }}"
+          body_path: RELEASE_NOTES.md
+          draft: false
+          # 严格策略：守卫只放行 vX.Y.Z，本仓库只签发正式版，不签发预发布版。
+          prerelease: false
+          files: ${{ steps.artifacts.outputs.artifacts }}
+          # 任一 glob 未命中即判失败，杜绝「构建绿但 Release 0 资产」静默通过。
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

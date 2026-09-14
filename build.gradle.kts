@@ -63,8 +63,12 @@ publishing {
         mavenLocal()
         maven {
             credentials {
-                username = findProperty("username").toString()
-                password = findProperty("password").toString()
+                // 优先读取 WCPE_MAVEN_USERNAME/PASSWORD；回退旧名 username/password 保持向后兼容。
+                // 用 ?.toString() 安全取值：findProperty 返回 null 时不得落成字符串 "null" 当凭据传出。
+                username = (findProperty("WCPE_MAVEN_USERNAME")
+                    ?: findProperty("username"))?.toString() ?: ""
+                password = (findProperty("WCPE_MAVEN_PASSWORD")
+                    ?: findProperty("password"))?.toString() ?: ""
             }
             authentication {
                 create<BasicAuthentication>("basic")
