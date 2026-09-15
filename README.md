@@ -17,7 +17,7 @@
 ```groovy
 plugins {
     id 'io.izzel.taboolib' version '2.0.38-wcpe.1'
-    id 'top.wcpe.taboolib.ioc' version '0.0.7'
+    id 'top.wcpe.taboolib.ioc' version '0.0.8'
 }
 ```
 
@@ -51,7 +51,7 @@ Kotlin DSL：
 plugins {
     kotlin("jvm") version "1.9.25"
     id("io.izzel.taboolib") version "2.0.38-wcpe.1"
-    id("top.wcpe.taboolib.ioc") version "0.0.7"
+    id("top.wcpe.taboolib.ioc") version "0.0.8"
 }
 
 group = "com.example.demo"
@@ -76,6 +76,10 @@ taboolibIoc {
 
     // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 com.example.custom.ioc。
     targetPackage = 'com.example.custom'
+
+    // 编译期 AOP 织入：开启后被切点命中的方法在构建期被改写为转发，具体类也能被切、且不创建代理。
+    // 也可以写在 gradle.properties：taboolib.ioc.weaving=true
+    weaving = false
 
     // 静态诊断发现 error 时直接拦截构建。
     analysisFailOnError = true
@@ -104,6 +108,10 @@ taboolibIoc {
 
     // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 com.example.custom.ioc。
     targetPackage("com.example.custom")
+
+    // 编译期 AOP 织入：开启后被切点命中的方法在构建期被改写为转发，具体类也能被切、且不创建代理。
+    // 也可以写在 gradle.properties：taboolib.ioc.weaving=true
+    weaving(false)
 
     // 静态诊断发现 error 时直接拦截构建。
     analysisFailOnError(true)
@@ -142,6 +150,7 @@ taboolib.ioc.version=1.2.0-SNAPSHOT
 - `autoTakeover`：关闭后不再自动注入依赖，也不会自动追加 relocate。
 - `iocVersion`：默认读取 `taboolib.ioc.version`；若未设置，则回退到插件自身打包时携带的版本；再无法确定时才回退到内置默认值 `1.2.0-SNAPSHOT`。不会再默认跟随 consumer 项目版本。
 - `targetPackage`：显式指定目标包根，最终 relocate 目标统一为 `<targetPackage>.ioc`。如果已经以 `.ioc` 结尾，则不会重复追加。
+- `weaving`：默认 `false`。读取 `taboolib.ioc.weaving`；开启后 `weaveTaboolibIocAop` 生效，详见 [编译期 AOP 织入](#编译期-aop-织入weavingtrue)。
 - `analysisFailOnError`：默认 `true`，静态诊断发现 error 时让 `analyzeTaboolibIocBeans` 和 `check/build` 失败。
 - `analysisFailOnWarning`：默认 `false`，打开后 warning 也会触发质量门失败。
 - `dependencyNotation`：改用外部 Maven 坐标。
@@ -250,6 +259,38 @@ Bean 注解识别范围：
 - 泛型注入匹配：优先按 `MessageBox<String>` 这类泛型签名匹配 Bean，降低原始类型导致的误报。
 - Kotlin `typealias` 索引：报告中会额外输出 `typeAliasIndex`，便于把源码别名和字节码类型对应起来。
 - 更细的条件判断：支持 `ConditionalOnProperty`、`ConditionalOnClass`、`ConditionalOnMissingClass`、`ConditionalOnBean`、`ConditionalOnMissingBean` 的静态启停判断。
+
+## 编译期 AOP 织入（`weaving(true)`）
+
+JDK 动态代理要求被切的目标**实现接口**，因此具体类切面会被静默跳过（静态诊断以 `aop-target-not-proxied` 提示）。
+开启织入后，插件在**构建期**用 ASM 把被切点命中的 public 实例方法改写为转发到 `AopWeavingRuntime`，
+原方法体搬到合成方法 `xxx$ioc$original`：
+
+```java
+public String greet(String name) {
+    return (String) AopWeavingRuntime.invoke(this, "greet(Ljava/lang/String;)Ljava/lang/String;",
+            "greet$ioc$original", new Object[]{ name });
+}
+public synthetic String greet$ioc$original(String name) { /* 原方法体原样保留 */ }
+```
+
+- **具体类也能被切**，且运行期**不创建任何代理**；
+- 第二个参数（**方法名 + 描述符**）在**构建期算好**写成字符串常量，运行期只做一次 map 查表 —— 不反射解析 `Method`、不拼接字符串；
+- 被织入的类会实现 `WovenTarget` 标记接口，运行期容器见到它即跳过代理，避免通知执行两次；**该标记随字节码一起 relocate，天然安全**；
+- 幂等：已织入的类不会二次处理，构建任务可安全重跑；
+- 不改写 `static` / `private` / `abstract` / `native` / 合成方法与构造器；带 `@NoAspect` 的类与方法跳过；
+- ASM 是**构建期依赖**，不会进入你的插件 jar。
+
+相关任务：
+
+| 任务 | 说明 |
+|---|---|
+| `weaveTaboolibIocAop` | 执行织入；`weaving(false)` 时为 disabled。挂在 `jar` / `assemble` / `build` / `taboolibMainTask` 之前 |
+
+开关来源（优先级从高到低）：`taboolibIoc { weaving(true) }` → `gradle.properties` 的 `taboolib.ioc.weaving=true` → 默认 `false`。
+
+> **局限**：织入后的类运行期不再创建代理，因此「运行期动态注册的、命中该类**未被织入方法**的切面」不会生效 ——
+> 请让构建期的切面集合覆盖你需要的全部切点。
 
 ## 兼容性说明
 

@@ -16,7 +16,7 @@
 修改 `gradle.properties` 中的 `version`：
 
 ```properties
-version=0.0.7
+version=0.0.8
 ```
 
 同步更新以下文件中的版本号：
@@ -75,7 +75,7 @@ export MAVEN_PUBLISH_PASSWORD=<your-password>
 
 ## 版本号策略
 
-- 开发阶段使用 `-SNAPSHOT` 后缀（如 `0.0.7-SNAPSHOT`）。
+- 开发阶段使用 `-SNAPSHOT` 后缀（如 `0.0.9-SNAPSHOT`）。
 - 正式发布时移除 `-SNAPSHOT` 后缀。
 - 建议插件版本与默认 `iocVersion` 保持同步。
 

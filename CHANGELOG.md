@@ -4,6 +4,17 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.0.8] - 2026-09-15
+
+### 新增
+
+- **编译期 AOP 织入（可选，默认关闭）**：新增 `taboolibIoc { weaving(true) }` 开关（等价项目属性 `taboolib.ioc.weaving=true`）与 `weaveTaboolibIocAop` 任务（挂在 `jar` / `assemble` / `build` / `taboolibMainTask` 之前）。开启后被切点命中的 public 实例方法在**构建期**被 ASM 改写为转发到 `AopWeavingRuntime`，原方法体搬到合成方法 `xxx$ioc$original`：
+  - **具体类（不实现任何接口）也能被切面命中，且不创建任何代理**；
+  - 织入后的类被加上 `WovenTarget` 标记接口（随字节码一并 relocate，天然 relocate 安全），运行期容器见到它即跳过代理，避免通知执行两次；
+  - **运行期入口零反射**：woven 方法传入的 key（**方法名 + 描述符**）在**构建期**算好，运行期按表查缓存，不再每次调用反射解析方法或拼接字符串 —— 实测该缺陷会让真机稳态从 63.5 ns/op 劣化到 886 ns/op；
+  - 幂等；不改写 `static` / `private` / `abstract` / `native` / 合成方法与构造器；带 `@NoAspect` 的类与方法跳过；
+  - 只用 ASM（`asm` + `asm-tree`，**构建期依赖**，不进消费者插件 jar）。
+
 ## [0.0.7] - 2026-09-13
 
 ### 新增
