@@ -37,6 +37,7 @@ dependencies {
     implementation(gradleApi())
     implementation(kotlin("stdlib"))
     implementation("org.ow2.asm:asm:9.7.1")
+    implementation("org.ow2.asm:asm-tree:9.7.1")
 
     testImplementation(gradleTestKit())
     testImplementation(kotlin("test"))

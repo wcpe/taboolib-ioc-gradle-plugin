@@ -25,6 +25,10 @@ class TaboolibIocPluginUnitTest {
         assertNotNull(project.tasks.findByName("analyzeTaboolibIocBeans"))
         assertNotNull(project.tasks.findByName("taboolibIocDoctor"))
         assertNotNull(project.tasks.findByName("verifyTaboolibIoc"))
+        // 编译期 AOP 织入任务（②）：默认禁用，但必须注册出来
+        val weaveTask = project.tasks.findByName("weaveTaboolibIocAop")
+        assertNotNull(weaveTask)
+        assertTrue(!weaveTask!!.enabled, "织入默认关闭")
     }
 
     @Test
@@ -45,5 +49,6 @@ class TaboolibIocPluginUnitTest {
             TaboolibIocPluginVersionLocator.resolveBundledVersion() ?: TaboolibIocResolver.DEFAULT_IOC_VERSION,
             extension.iocVersion.get(),
         )
+        assertTrue(!extension.weaving.get(), "编译期织入默认关闭")
     }
 }

@@ -19,6 +19,9 @@ abstract class TaboolibIocExtension @Inject constructor(objects: ObjectFactory) 
 
     val localProjectPath: Property<String> = objects.property(String::class.java)
 
+    /** 是否开启**编译期 AOP 织入**（默认关闭）。 */
+    val weaving: Property<Boolean> = objects.property(Boolean::class.java)
+
     val analysisFailOnError: Property<Boolean> = objects.property(Boolean::class.java)
 
     val analysisFailOnWarning: Property<Boolean> = objects.property(Boolean::class.java)
@@ -43,6 +46,10 @@ abstract class TaboolibIocExtension @Inject constructor(objects: ObjectFactory) 
 
     fun targetPackage(packageName: String) {
         targetPackage.set(packageName)
+    }
+
+    fun weaving(enabled: Boolean) {
+        weaving.set(enabled)
     }
 
     fun analysisFailOnError(enabled: Boolean) {

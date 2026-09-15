@@ -14,6 +14,7 @@ import top.wcpe.taboolib.ioc.gradle.backend.StandaloneBackend
 import top.wcpe.taboolib.ioc.gradle.backend.TabooLibBackend
 import top.wcpe.taboolib.ioc.gradle.model.ResolvedIocConfiguration
 import top.wcpe.taboolib.ioc.gradle.model.ProjectDependencySpec
+import top.wcpe.taboolib.ioc.gradle.weaving.WeaveTaboolibIocAopTask
 
 class TaboolibIocPlugin : Plugin<Project> {
 
@@ -22,7 +23,10 @@ class TaboolibIocPlugin : Plugin<Project> {
         applyConventions(project, extension)
 
         val resolver = TaboolibIocResolver(project, extension)
-        registerAnalysisTask(project, extension, resolver)
+        val analysisTask = registerAnalysisTask(project, extension, resolver)
+        val weaveTask = registerWeaveTask(project, extension)
+        weaveTask.configure { it.mustRunAfter(analysisTask) }
+        attachWeavingHooks(project, weaveTask)
         val doctorTask = registerDoctorTask(project)
         val verifyTask = registerVerifyTask(project)
         registerDependencyHooks(project, extension, resolver)
@@ -108,6 +112,9 @@ class TaboolibIocPlugin : Plugin<Project> {
                 readStringProperty(project, TaboolibIocResolver.IOC_VERSION_PROPERTY)
                     ?: defaultIocVersion()
             },
+        )
+        extension.weaving.convention(
+            readBooleanProperty(project, "taboolib.ioc.weaving") ?: false,
         )
         extension.analysisFailOnError.convention(
             readBooleanProperty(project, "taboolib.ioc.analysis.fail-on-error") ?: true,
@@ -264,6 +271,39 @@ class TaboolibIocPlugin : Plugin<Project> {
      *   且非 subproject 跳过）时才挂依赖；否则在 verify 内部优雅跳过并打印诊断。
      * - 同时显式要求 taboolib 插件已应用（否则给出明确错误而非静默通过）。
      */
+    private fun registerWeaveTask(
+        project: Project,
+        extension: TaboolibIocExtension,
+    ): TaskProvider<WeaveTaboolibIocAopTask> {
+        // 惰性解析：插件可能被应用在尚未启用 java 插件的工程上（例如单测的 ProjectBuilder），
+        // 此时直接取 JavaPluginExtension/sourceSets 会抛异常。classesDirs 自带 builtBy，
+        // 解析时机在任务图计算阶段，任务依赖仍会被自动推断。
+        val classDirectories = project.files(
+            java.util.concurrent.Callable {
+                project.extensions.findByType(JavaPluginExtension::class.java)
+                    ?.sourceSets
+                    ?.findByName("main")
+                    ?.output
+                    ?.classesDirs
+            }
+        )
+        return project.tasks.register("weaveTaboolibIocAop", WeaveTaboolibIocAopTask::class.java) { task ->
+            task.group = "taboolib ioc"
+            task.description = "Weaves AOP advice into matched methods at build time (works for concrete classes)."
+            // 用 Gradle 原生 enabled：关闭时任务直接 SKIPPED，不进 TaskAction
+            task.enabled = extension.weaving.get()
+            task.classDirectories.from(classDirectories)
+        }
+    }
+
+    /** 织入必须早于打包任务（jar / assemble / build / taboolibMainTask）。 */
+    private fun attachWeavingHooks(project: Project, weaveTask: TaskProvider<WeaveTaboolibIocAopTask>) {
+        val guardedTaskNames = setOf("jar", "assemble", "build", "taboolibMainTask")
+        project.tasks.matching { it.name in guardedTaskNames }.configureEach { task ->
+            task.dependsOn(weaveTask)
+        }
+    }
+
     private fun attachVerificationHooks(project: Project, verifyTask: TaskProvider<Task>) {
         val guardedTaskNames = setOf("jar", "assemble", "build")
         // 通过 matching + configureEach 延迟到任务真正注册后再绑定，避免顺序敏感。
