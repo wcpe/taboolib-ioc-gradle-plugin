@@ -2,6 +2,22 @@
 
 一个面向 `io.izzel.taboolib` 的辅助 Gradle 插件，用来把 `top.wcpe.taboolib.ioc:taboolib-ioc` 自动打入 consumer 产物，并自动追加 `top.wcpe.taboolib.ioc -> <目标包>.ioc` 的 relocate 规则。
 
+## 目录
+
+- [功能概览](#功能概览)
+- [插件 ID](#插件-id)
+- [最小接入](#最小接入)
+- [DSL](#dsl)
+- [目标包推导规则](#目标包推导规则)
+- [从手写 `taboo + relocate` 迁移](#从手写-taboo--relocate-迁移)
+- [诊断任务](#诊断任务)
+- [编译期 AOP 织入（`weaving(true)`）](#编译期-aop-织入weavingtrue)
+- [兼容性说明](#兼容性说明)
+- [质量门](#质量门)
+- [发布与版本策略](#发布与版本策略)
+- [Example](#example)
+- [更新日志](#更新日志)
+
 ## 功能概览
 
 - 自动向 `taboo` 配置注入 IoC 依赖。
@@ -22,6 +38,10 @@ plugins {
 ```
 
 ## 最小接入
+
+<details>
+<summary><b>展开</b> · 只需要一行插件 id；Groovy / Kotlin DSL 两种写法对照</summary>
+
 
 Groovy DSL：
 
@@ -62,7 +82,13 @@ group = "com.example.demo"
 - 依赖：`top.wcpe.taboolib.ioc:taboolib-ioc:<iocVersion>`
 - relocate：`top.wcpe.taboolib.ioc -> <目标包>.ioc`
 
+</details>
+
 ## DSL
+
+<details>
+<summary><b>展开</b> · <code>taboolibIoc { }</code> 全部配置项与含义（<code>autoTakeover</code> / <code>iocVersion</code> / <code>targetPackage</code> / <code>weaving</code> / 诊断开关）</summary>
+
 
 Groovy DSL：
 
@@ -156,6 +182,8 @@ taboolib.ioc.version=1.2.0-SNAPSHOT
 - `dependencyNotation`：改用外部 Maven 坐标。
 - `useLocalProject(':path')`：本地联调入口，用项目依赖替代外部坐标。
 
+</details>
+
 ## 目标包推导规则
 
 优先级从高到低（共 4 级，与 `TaboolibIocResolver.resolveTargetPackage` 实现一致）：
@@ -173,6 +201,10 @@ taboolib.ioc.version=1.2.0-SNAPSHOT
 > 存在前缀包含关系（含相等），则不会直接采用，而是追加 `.ioc` 后缀，避免自 relocate。
 
 ## 从手写 `taboo + relocate` 迁移
+
+<details>
+<summary><b>展开</b> · 原写法与迁移后写法对照；残留的手写 relocate 若与插件冲突会直接失败</summary>
+
 
 原写法：
 
@@ -196,7 +228,13 @@ taboolibIoc {
 
 如果保留了原有手写 relocate，插件会在检测到冲突时直接失败，避免产物中出现不一致的 relocate 规则。
 
+</details>
+
 ## 诊断任务
+
+<details>
+<summary><b>展开</b> · <code>taboolibIocDoctor</code>：输出当前后端、依赖来源…</summary>
+
 
 - `taboolibIocDoctor`：输出当前后端、依赖来源、目标包来源、是否已完成接管。
 - `verifyTaboolibIoc`：在 `jar`、`assemble`、`build` 前验证自动接管是否已经生效。
@@ -260,7 +298,13 @@ Bean 注解识别范围：
 - Kotlin `typealias` 索引：报告中会额外输出 `typeAliasIndex`，便于把源码别名和字节码类型对应起来。
 - 更细的条件判断：支持 `ConditionalOnProperty`、`ConditionalOnClass`、`ConditionalOnMissingClass`、`ConditionalOnBean`、`ConditionalOnMissingBean` 的静态启停判断。
 
+</details>
+
 ## 编译期 AOP 织入（`weaving(true)`）
+
+<details>
+<summary><b>展开</b> · JDK 动态代理要求被切的目标实现接口…</summary>
+
 
 JDK 动态代理要求被切的目标**实现接口**，因此具体类切面会被静默跳过（静态诊断以 `aop-target-not-proxied` 提示）。
 开启织入后，插件在**构建期**用 ASM 把被切点命中的 public 实例方法改写为转发到 `AopWeavingRuntime`，
@@ -292,7 +336,13 @@ public synthetic String greet$ioc$original(String name) { /* 原方法体原样�
 > **局限**：织入后的类运行期不再创建代理，因此「运行期动态注册的、命中该类**未被织入方法**的切面」不会生效 ——
 > 请让构建期的切面集合覆盖你需要的全部切点。
 
+</details>
+
 ## 兼容性说明
+
+<details>
+<summary><b>展开</b> · 当前仓库内已经验证通过的组合</summary>
+
 
 当前仓库内已经验证通过的组合：
 
@@ -315,7 +365,13 @@ public synthetic String greet$ioc$original(String name) { /* 原方法体原样�
 - `StandaloneBackend` 只保留扩展边界，当前不能独立完成打包与 relocate。
 - 如果要扩展到更多 `io.izzel.taboolib` 版本，建议把 `example` 联调构建纳入 CI 做版本矩阵验证。
 
+</details>
+
 ## 质量门
+
+<details>
+<summary><b>展开</b> · consumer 工程应用本插件后，<code>check/build</code> 现在会自动依赖…</summary>
+
 
 - consumer 工程应用本插件后，`check/build` 现在会自动依赖 `analyzeTaboolibIocBeans`，默认把静态诊断 error 接入质量门。
 - `analysisFailOnError` 默认开启；`analysisFailOnWarning` 默认关闭，可按模块显式调整。
@@ -326,7 +382,13 @@ public synthetic String greet$ioc$original(String name) { /* 原方法体原样�
 - 当前门槛为：行覆盖率不低于 75%，分支覆盖率不低于 55%。
 - 覆盖率报告输出位置：`build/reports/jacoco/test/`。
 
+</details>
+
 ## 发布与版本策略
+
+<details>
+<summary><b>展开</b> · Maven 坐标、Plugin Marker 与 tag 驱动发版流程</summary>
+
 
 - Gradle Plugin Marker：由 `java-gradle-plugin` 自动生成。
 - Maven 发布：支持 `publishToMavenLocal`，也支持通过 `publish.repo.url`、`publish.repo.username`、`publish.repo.password` 或对应环境变量发布到远端 Maven 仓库。
@@ -334,7 +396,13 @@ public synthetic String greet$ioc$original(String name) { /* 原方法体原样�
 - 建议让插件版本与默认 `iocVersion` 对齐；开发阶段使用 `-SNAPSHOT`，正式发布时移除 `-SNAPSHOT` 并同步更新 README 与 example 版本。
 - 详细步骤见 `docs/RELEASE.md`。
 
+</details>
+
 ## Example
+
+<details>
+<summary><b>展开</b> · 仓库内置了两份真实语法示例工程</summary>
+
 
 仓库内置了两份真实语法示例工程：
 
@@ -380,6 +448,8 @@ $exampleLocalRepo = Join-Path (Resolve-Path "example").Path ".m2-local"
 - 两个产物中都不再保留原始的 `top/wcpe/taboolib/ioc/...` 路径。
 
 执行 `analyzeTaboolibIocBeans` 后，可打开对应模块下的 `build/reports/taboolib-ioc/static-diagnosis.json` 查看静态诊断报告。
+
+</details>
 
 ## 更新日志
 
