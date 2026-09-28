@@ -16,7 +16,7 @@
 修改 `gradle.properties` 中的 `version`：
 
 ```properties
-version=0.0.8
+version=0.0.9
 ```
 
 同步更新以下文件中的版本号：

@@ -11,7 +11,7 @@ plugins {
     java
     kotlin("jvm")
     id("io.izzel.taboolib") version "2.0.38-wcpe.1"
-    id("top.wcpe.taboolib.ioc") version "0.0.6"
+    id("top.wcpe.taboolib.ioc") version "0.0.9"
 }
 
 

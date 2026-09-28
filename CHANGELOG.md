@@ -4,6 +4,17 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.0.9] - 2026-09-28
+
+### 修复
+
+- **Gradle 配置缓存兼容**：此前开启 `--configuration-cache` 时本插件会因任务状态不可序列化而报错（`org.gradle.configuration-cache.problems=fail` 下直接中断构建）。现在三个任务在执行阶段都不再访问 `Project` / resolver：
+  - `analyzeTaboolibIocBeans`：工程路径改由配置阶段写入的 `@Input` 属性提供（原实现在 `@TaskAction` 中读取 `project.path`）；
+  - `verifyTaboolibIoc`：由匿名 `DefaultTask` + 捕获 `Project` 的 `doLast` 闭包改为 `VerifyTaboolibIocTask`，校验所需的 relocate 快照（是否已应用 taboolib、期望与实际 relocate 目标）在配置阶段采集；
+  - `taboolibIocDoctor`：改为 `TaboolibIocDoctorTask`，诊断文本在配置阶段生成、执行阶段只负责输出；
+  - `PackagingBackend.verify` 的入参由 `Project` / resolver 改为只读快照 `BackendVerificationInput`。
+- 新增配置缓存回归测试：完整 consumer 构建须在 `--configuration-cache --configuration-cache-problems=fail` 下成功，并存储与复用缓存条目。
+
 ## [0.0.8] - 2026-09-15
 
 ### 新增
