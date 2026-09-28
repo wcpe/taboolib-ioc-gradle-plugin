@@ -411,6 +411,38 @@ internal object StaticDiagnosisEngine {
             entry.className to entry.genericSuperTypes.map { normalizeTypeName(it) }
         }
 
+                /** A（性能）：按需补齐泛型父类型时的缓存，避免同一类型重复反射。 */
+                private val lazyGenericSuperTypes = HashMap<String, List<String>>()
+
+                /**
+                 * 取某类型的泛型父类/接口清单。
+                 *
+                 * 采集阶段只为 Bean 暴露类型预解析（见 BytecodeBeanIndexBuilder.enrichGenericMetadata），
+                 * 避免为上万个与 IoC 无关的依赖类付反射加载成本；其余类型若被后续规则查询到，
+                 * 这里用扫描类加载器按需补齐并缓存，结果与全量预解析一致。
+                 */
+                private fun genericSuperTypesOf(typeName: String): List<String> {
+                    genericSuperTypeIndex[typeName]?.takeIf { it.isNotEmpty() }?.let { return it }
+                    val canonicalName = canonical(typeName)
+                    genericSuperTypeIndex[canonicalName]?.takeIf { it.isNotEmpty() }?.let { return it }
+                    return lazyGenericSuperTypes.getOrPut(canonicalName) { resolveGenericSuperTypes(canonicalName) }
+                }
+
+                private fun resolveGenericSuperTypes(className: String): List<String> {
+                    val classLoader = scanClassLoader ?: return emptyList()
+                    val clazz = try {
+                        Class.forName(className, false, classLoader)
+                    } catch (_: Throwable) {
+                        return emptyList()
+                    }
+                    return buildList {
+                        clazz.genericSuperclass?.typeName
+                            ?.takeUnless { it == "java.lang.Object" }
+                            ?.let { add(normalizeTypeName(it)) }
+                        clazz.genericInterfaces.map { normalizeTypeName(it.typeName) }.forEach(::add)
+                    }.distinct().sorted()
+                }
+
         /**
          * B-P1-04：typealias 归一化映射（aliasFqcn -> targetFqcn）。
          *
@@ -495,7 +527,7 @@ internal object StaticDiagnosisEngine {
             val resolvedDependencyGenericType = canonicalGeneric(dependencyGenericType)
             val candidateGenericTypes = buildList {
                 bean.exposedGenericType?.let { add(normalizeTypeName(it)) }
-                addAll(genericSuperTypeIndex[bean.exposedType].orEmpty())
+                addAll(genericSuperTypesOf(bean.exposedType))
             }
             if (candidateGenericTypes.isEmpty()) {
                 return true

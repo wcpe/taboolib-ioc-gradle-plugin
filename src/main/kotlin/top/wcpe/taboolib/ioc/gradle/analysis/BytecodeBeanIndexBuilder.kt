@@ -4,6 +4,8 @@ import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Locale
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executors
 import java.util.jar.JarFile
 import org.objectweb.asm.AnnotationVisitor
 import org.objectweb.asm.ClassReader
@@ -50,13 +52,7 @@ internal object BytecodeBeanIndexBuilder {
 
         // 两阶段采集：先解析全部类得到 collector（保留插入顺序，项目输出在前），
         // 再逐个构建索引 —— 第二阶段需要跨类读取 Companion 类的 $annotations 载体（H3）
-        val collectors = LinkedHashMap<String, ClassCollector>()
-        existingEntries.forEach { entry ->
-            when {
-                Files.isDirectory(entry) -> scanDirectory(entry, collectors)
-                Files.isRegularFile(entry) && entry.toString().endsWith(".jar") -> scanJar(entry, collectors)
-            }
-        }
+        val collectors = scanEntries(existingEntries)
 
         val classIndex = mutableListOf<ClassIndexEntry>()
         val beanIndex = mutableListOf<BeanDefinition>()
@@ -160,35 +156,124 @@ internal object BytecodeBeanIndexBuilder {
         )
     }
 
-    private fun scanDirectory(
-        root: Path,
-        collectors: LinkedHashMap<String, ClassCollector>,
-    ) {
-        Files.walk(root).use { stream ->
-            stream.filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
-                .forEach { classFile -> scanClassBytes(Files.readAllBytes(classFile), collectors) }
-        }
-    }
+    /** 扫描并行度上限；实际取 CPU 核数与该值的较小者。 */
+    private const val MAX_SCAN_THREADS = 8
 
-    private fun scanJar(
-        jarPath: Path,
-        collectors: LinkedHashMap<String, ClassCollector>,
-    ) {
-        JarFile(jarPath.toFile()).use { jarFile ->
-            jarFile.entries().asSequence()
-                .filter { !it.isDirectory && it.name.endsWith(".class") }
-                .forEach { entry ->
-                    jarFile.getInputStream(entry).use { input ->
-                        scanClassBytes(input.readBytes(), collectors)
+    /**
+     * 扫描全部类路径条目，返回「类名 → 采集器」的有序索引（先出现的条目优先）。
+     *
+     * 相比「逐条目串行解析后再由 putIfAbsent 丢弃」，这里去掉两处可避免的工作量，
+     * 且不改变结果语义：
+     *
+     * - **跨条目去重前置**：jar 先只读 zip 中央目录拿到条目名（不解压字节），按路径推导
+     *   类名，已被先前条目领走的类不再解压与解析。典型收益是 NMS 的 mapped 与 universal
+     *   两份等价 jar（各含约 7800 个类），此前第二份要整份解析后才丢弃。
+     * - **条目级并行**：并行单元就是一个条目（jar 只打开一次），合并仍按原始顺序，
+     *   等价于串行的「先出现优先」。
+     *
+     * 注意：不要改回「把全部类摊平后按类数分块」的写法 —— 同一个 jar 会被切成多个任务
+     * 反复打开（NMS 那种 7800 类的 jar 会被打开十几次），实测反而比串行更慢。
+     */
+    private fun scanEntries(entries: List<Path>): LinkedHashMap<String, ClassCollector> {
+        val claimedClassNames = HashSet<String>()
+        val plans = ArrayList<EntryPlan>()
+        for (entry in entries) {
+            when {
+                Files.isDirectory(entry) -> {
+                    // 目录分支直接持有文件路径，避免「路径 ↔ 类名」来回转换的额外开销
+                    val classFiles = Files.walk(entry).use { stream ->
+                        stream.filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }.toList()
+                    }
+                    val pending = classFiles.filter { claimedClassNames.add(classNameOf(entry, it)) }
+                    if (pending.isNotEmpty()) {
+                        plans += EntryPlan(entry, pending.map { it.toString() })
                     }
                 }
+
+                Files.isRegularFile(entry) && entry.toString().endsWith(".jar") -> {
+                    val pending = jarClassEntryNames(entry).filter { claimedClassNames.add(it.replace('/', '.')) }
+                    if (pending.isNotEmpty()) {
+                        plans += EntryPlan(entry, pending)
+                    }
+                }
+            }
+        }
+        return scanPlans(plans)
+    }
+
+    /** 一个条目的待解析清单：[locators] 对目录是 class 文件路径，对 jar 是条目名。 */
+    private class EntryPlan(val entry: Path, val locators: List<String>)
+
+    /** 把条目内的 class 文件相对路径换算成类名（仅用于跨条目去重）。 */
+    private fun classNameOf(root: Path, classFile: Path): String {
+        return root.relativize(classFile).toString().replace('\\', '/')
+            .removeSuffix(".class").replace('/', '.')
+    }
+
+    /** 只读 zip 中央目录列出 class 条目名，不解压任何字节。 */
+    private fun jarClassEntryNames(jar: Path): List<String> {
+        return JarFile(jar.toFile()).use { jarFile ->
+            jarFile.entries().asSequence()
+                .filter { !it.isDirectory && it.name.endsWith(".class") }
+                .map { it.name }
+                .toList()
         }
     }
 
-    private fun scanClassBytes(
-        classBytes: ByteArray,
-        collectors: LinkedHashMap<String, ClassCollector>,
-    ) {
+    private fun scanPlans(plans: List<EntryPlan>): LinkedHashMap<String, ClassCollector> {
+        val threads = minOf(MAX_SCAN_THREADS, Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
+        if (threads <= 1 || plans.size <= 1) {
+            val collectors = LinkedHashMap<String, ClassCollector>()
+            plans.forEach { plan -> mergeInto(collectors, scanPlan(plan)) }
+            return collectors
+        }
+
+        val executor = Executors.newFixedThreadPool(threads) { runnable ->
+            Thread(runnable, "taboolib-ioc-scan").apply { isDaemon = true }
+        }
+        try {
+            val futures = plans.map { plan -> CompletableFuture.supplyAsync({ scanPlan(plan) }, executor) }
+            // 按条目顺序合并，等价于串行的「先出现优先」
+            return mergeScanned(futures.map { it.join() })
+        } finally {
+            executor.shutdown()
+        }
+    }
+
+    /** 按分片顺序合并采集结果，保留先出现者（与串行版本的 putIfAbsent 语义一致）。 */
+    private fun mergeScanned(parts: List<Map<String, ClassCollector>>): LinkedHashMap<String, ClassCollector> {
+        val collectors = LinkedHashMap<String, ClassCollector>()
+        parts.forEach { part -> mergeInto(collectors, part) }
+        return collectors
+    }
+
+    private fun mergeInto(target: MutableMap<String, ClassCollector>, part: Map<String, ClassCollector>) {
+        part.forEach { (className, collector) -> target.putIfAbsent(className, collector) }
+    }
+
+    /** 解析一个条目的待处理清单；jar 在此只打开一次。 */
+    private fun scanPlan(plan: EntryPlan): Map<String, ClassCollector> {
+        val collectors = LinkedHashMap<String, ClassCollector>()
+        if (Files.isDirectory(plan.entry)) {
+            plan.locators.forEach { locator -> collect(Files.readAllBytes(Path.of(locator)), collectors) }
+            return collectors
+        }
+        JarFile(plan.entry.toFile()).use { jarFile ->
+            plan.locators.forEach entryLoop@{ entryName ->
+                val jarEntry = jarFile.getEntry(entryName) ?: return@entryLoop
+                jarFile.getInputStream(jarEntry).use { input -> collect(input.readBytes(), collectors) }
+            }
+        }
+        return collectors
+    }
+
+    /**
+     * 解析单个类并以字节中的真实类名为键登记采集器。
+     *
+     * 路径推导名与真实类名在正常 jar 中一致（多版本 jar 的 `META-INF/versions/...` 除外，
+     * 其推导名不会被占用，因此仍会走到这里），此处以字节为准以保证索引正确。
+     */
+    private fun collect(classBytes: ByteArray, collectors: MutableMap<String, ClassCollector>) {
         val collector = ClassCollector()
         ClassReader(classBytes).accept(collector, ClassReader.SKIP_CODE or ClassReader.SKIP_FRAMES)
         if (collector.collectorClassName.isNotEmpty()) {
@@ -197,16 +282,27 @@ internal object BytecodeBeanIndexBuilder {
         }
     }
 
+
+
     private fun enrichGenericMetadata(index: BytecodeAnalysisIndex, scanRoots: List<Path>): BytecodeAnalysisIndex {
         if (scanRoots.isEmpty()) {
             return index
         }
+        // A（性能）：泛型层级只为「会被查询的类型」加载 Class。
+        // TypeHierarchy 只用 genericSuperTypes 做 Bean 暴露类型的泛型匹配，此前却对全部扫描到的类
+        // 逐个 Class.forName —— 依赖 jar 里上万个与 IoC 无关的类也要走一遍，实测占该任务耗时的一半以上。
+        // 其余类型改由 TypeHierarchy 在真正查询时按需补齐（行为与全量预解析一致）。
+        val genericTypeOwners = index.beanIndex.mapTo(HashSet()) { it.exposedType }
         val urls = scanRoots.map { it.toUri().toURL() }.toTypedArray()
         URLClassLoader(urls, BytecodeBeanIndexBuilder::class.java.classLoader).use { classLoader ->
             val updatedClassIndex = index.classIndex.map { entry ->
-                loadClass(entry.className, classLoader)?.let { clazz ->
-                    entry.copy(genericSuperTypes = safelyResolveMetadata(emptyList()) { collectGenericSuperTypes(clazz) })
-                } ?: entry
+                if (entry.className !in genericTypeOwners) {
+                    entry
+                } else {
+                    loadClass(entry.className, classLoader)?.let { clazz ->
+                        entry.copy(genericSuperTypes = safelyResolveMetadata(emptyList()) { collectGenericSuperTypes(clazz) })
+                    } ?: entry
+                }
             }
             val updatedBeans = index.beanIndex.map { bean -> enrichBeanDefinition(bean, classLoader) }
             val updatedInjections = index.injectionPointIndex.map { injection -> enrichInjectionPoint(injection, classLoader) }

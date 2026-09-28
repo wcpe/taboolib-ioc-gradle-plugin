@@ -90,12 +90,11 @@ class BytecodeBeanIndexBuilderUnitTest {
                     it.dependencyGenericType == "fixture.included.scan.MessageBox<java.lang.String>"
             },
         )
-        assertTrue(
-            index.classIndex.any { entry ->
-                entry.className == "fixture.included.scan.StringMessageBox" &&
-                    entry.genericSuperTypes.contains("fixture.included.scan.MessageBox<java.lang.String>")
-            },
-        )
+        // 泛型层级不再对全部扫描类预解析：此前对依赖 jar 里上万个与 IoC 无关的类逐个反射加载，
+        // 占该任务耗时的一半以上。现在只预解析会被 TypeHierarchy 查询的 Bean 暴露类型
+        // （见 BytecodeBeanIndexBuilder.enrichGenericMetadata），其余类型由 TypeHierarchy
+        // 在查询时用扫描类加载器按需补齐。故此处不再断言非 Bean 类型（StringMessageBox）的
+        // genericSuperTypes —— 该值的消费方只有 isGenericMatch，而它只查 Bean 暴露类型。
         assertEquals(listOf("fixture.included.scan"), index.componentScans.single().basePackages)
     }
 
