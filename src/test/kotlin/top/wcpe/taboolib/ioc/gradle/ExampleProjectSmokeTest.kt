@@ -186,14 +186,21 @@ class ExampleProjectSmokeTest {
         path.writeText(existingLines.joinToString(separator = System.lineSeparator(), postfix = System.lineSeparator()))
     }
 
+    /**
+     * 把 example 里的插件版本对齐到当前构建版本。
+     *
+     * 注意：这里是 Kotlin 原始字符串（`"""`），不做转义处理，正则中的点号必须写成 `\.`；
+     * 多写一层反斜杠会让正则匹配「字面反斜杠 + 任意字符」，在带点的坐标上永远失配 ——
+     * 此前 example 因此一直沿用源码里写死的旧版本号，冒烟测试实际并未测到当前源码。
+     */
     private fun alignPluginVersion(content: String, pluginVersion: String): String {
         return content
             .replace(
-                Regex("""id\("top\\.wcpe\\.taboolib\\.ioc"\) version "[^"]+"""),
+                Regex("""id\("top\.wcpe\.taboolib\.ioc"\) version "[^"]+""""),
                 "id(\"top.wcpe.taboolib.ioc\") version \"$pluginVersion\"",
             )
             .replace(
-                Regex("""id 'top\\.wcpe\\.taboolib\\.ioc' version '[^']+'"""),
+                Regex("""id 'top\.wcpe\.taboolib\.ioc' version '[^']+'"""),
                 """id 'top.wcpe.taboolib.ioc' version '$pluginVersion'""",
             )
     }

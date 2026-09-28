@@ -20,11 +20,7 @@ internal object StandaloneBackend : PackagingBackend {
         )
     }
 
-    override fun verify(
-        project: Project,
-        resolver: TaboolibIocResolver,
-        configuration: ResolvedIocConfiguration,
-    ) {
+    override fun verify(input: BackendVerificationInput) {
         throw TaboolibIocConfigurationException(
             "StandaloneBackend 仅保留接口边界。请改用 backend = TABOOLIB，或暂时关闭 autoTakeover。",
         )

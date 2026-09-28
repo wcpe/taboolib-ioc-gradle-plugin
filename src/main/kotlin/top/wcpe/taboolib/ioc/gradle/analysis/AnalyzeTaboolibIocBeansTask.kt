@@ -49,6 +49,15 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
     @get:Optional
     abstract val projectPropertiesInput: MapProperty<String, String>
 
+    /**
+     * 当前工程路径。
+     *
+     * 由插件在配置阶段写入，**不能**在执行阶段读取 `Task.project`：
+     * 后者会被 Gradle 配置缓存判定为不受支持的执行期 Project 访问。
+     */
+    @get:Input
+    abstract val projectPath: Property<String>
+
     @get:OutputFile
     abstract val reportFile: RegularFileProperty
 
@@ -77,7 +86,7 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
         )
         val report = scanClassLoader.use {
             StaticDiagnosisEngine.analyze(
-                projectPath = project.path,
+                projectPath = projectPath.get(),
                 index = index,
                 typeAliases = typeAliases,
                 projectProperties = projectPropertiesInput.getOrElse(emptyMap()),

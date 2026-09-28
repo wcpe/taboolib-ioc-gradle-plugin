@@ -14,6 +14,7 @@ import org.gradle.api.tasks.bundling.Jar
 import org.gradle.testfixtures.ProjectBuilder
 import top.wcpe.taboolib.ioc.gradle.backend.PackagingBackendId
 import top.wcpe.taboolib.ioc.gradle.backend.TabooLibBackend
+import top.wcpe.taboolib.ioc.gradle.backend.collectBackendVerification
 import top.wcpe.taboolib.ioc.gradle.model.ModuleDependencySpec
 import top.wcpe.taboolib.ioc.gradle.model.ProjectDependencySpec
 import top.wcpe.taboolib.ioc.gradle.model.ResolvedIocConfiguration
@@ -238,7 +239,7 @@ class TabooLibBackendUnitTest {
         val extension = project.extensions.getByName("taboolib") as FakeTaboolibExtension
         extension.relocation[TaboolibIocResolver.SOURCE_PACKAGE] = "com.example.demo.ioc"
 
-        TabooLibBackend.verify(project, resolver, moduleConfiguration())
+        TabooLibBackend.verify(collectBackendVerification(resolver, moduleConfiguration()))
     }
 
     @Test
@@ -248,7 +249,7 @@ class TabooLibBackendUnitTest {
         val resolver = createResolver(project)
 
         val error = assertFailsWith<TaboolibIocConfigurationException> {
-            TabooLibBackend.verify(project, resolver, moduleConfiguration())
+            TabooLibBackend.verify(collectBackendVerification(resolver, moduleConfiguration()))
         }
 
         assertContains(error.message ?: "", "IoC relocate 尚未生效")
@@ -260,7 +261,7 @@ class TabooLibBackendUnitTest {
         applyFakeTaboolib(project)
         val resolver = createResolver(project)
 
-        TabooLibBackend.verify(project, resolver, moduleConfiguration(skipBecauseSubproject = true))
+        TabooLibBackend.verify(collectBackendVerification(resolver, moduleConfiguration(skipBecauseSubproject = true)))
     }
 
     private fun buildProject(name: String): Project {

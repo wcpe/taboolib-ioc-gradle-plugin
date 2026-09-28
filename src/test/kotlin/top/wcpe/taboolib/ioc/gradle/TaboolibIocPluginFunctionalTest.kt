@@ -456,4 +456,50 @@ class TaboolibIocPluginFunctionalTest {
         assertContains(result.output, "missing-inject-annotation")
         assertContains(result.output, "source: Consumers.java")
     }
+
+        @Test
+        fun buildSucceedsAndStoresConfigurationCacheEntry() {
+            val project = FunctionalTestProject(tempDir.resolve("configuration-cache")).writeFixture(
+                FixtureOptions(),
+            )
+
+            // 预热：先让构建产物就位。否则首次构建会新产出 ioc-lib/build/libs/*.jar，
+            // 配置缓存的文件系统探测会因此判定「不可复用」，掩盖真正要守的序列化缺陷。
+            project.build(":consumer:build", "--no-configuration-cache")
+
+            val result = project.build(
+                ":consumer:build",
+                "--configuration-cache",
+                "--configuration-cache-problems=fail",
+            )
+            assertContains(result.output, "Configuration cache entry stored")
+
+            // 第二次构建必须复用缓存条目：证明任务状态确实可序列化，而不是每次都被丢弃。
+            val reused = project.build(
+                ":consumer:build",
+                "--configuration-cache",
+                "--configuration-cache-problems=fail",
+            )
+            assertContains(reused.output, "Reusing configuration cache")
+        }
+
+        /**
+         * 配置缓存回归：`taboolibIocDoctor` 的诊断文本改为配置阶段生成，
+         * 该任务同样必须在配置缓存下可用，且输出内容保持不变。
+         */
+        @Test
+        fun doctorTaskWorksWithConfigurationCache() {
+            val project = FunctionalTestProject(tempDir.resolve("configuration-cache-doctor")).writeFixture(
+                FixtureOptions(),
+            )
+
+            val result = project.build(
+                ":consumer:taboolibIocDoctor",
+                "--configuration-cache",
+                "--configuration-cache-problems=fail",
+            )
+
+            assertContains(result.output, "[taboolibIocDoctor] configured = true")
+            assertContains(result.output, "Configuration cache entry stored")
+        }
 }

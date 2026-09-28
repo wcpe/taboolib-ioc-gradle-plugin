@@ -8,12 +8,15 @@ import org.gradle.language.base.plugins.LifecycleBasePlugin
 import org.gradle.api.tasks.TaskProvider
 import top.wcpe.taboolib.ioc.gradle.analysis.AnalyzeTaboolibIocBeansTask
 import top.wcpe.taboolib.ioc.gradle.backend.BackendConfigurationResult
+import top.wcpe.taboolib.ioc.gradle.backend.collectBackendVerification
 import top.wcpe.taboolib.ioc.gradle.backend.PackagingBackend
 import top.wcpe.taboolib.ioc.gradle.backend.PackagingBackendId
 import top.wcpe.taboolib.ioc.gradle.backend.StandaloneBackend
 import top.wcpe.taboolib.ioc.gradle.backend.TabooLibBackend
 import top.wcpe.taboolib.ioc.gradle.model.ResolvedIocConfiguration
 import top.wcpe.taboolib.ioc.gradle.model.ProjectDependencySpec
+import top.wcpe.taboolib.ioc.gradle.task.TaboolibIocDoctorTask
+import top.wcpe.taboolib.ioc.gradle.task.VerifyTaboolibIocTask
 import top.wcpe.taboolib.ioc.gradle.weaving.WeaveTaboolibIocAopTask
 
 class TaboolibIocPlugin : Plugin<Project> {
@@ -31,57 +34,11 @@ class TaboolibIocPlugin : Plugin<Project> {
         val verifyTask = registerVerifyTask(project)
         registerDependencyHooks(project, extension, resolver)
 
-        var resolvedConfiguration: Result<ResolvedIocConfiguration> = Result.failure(
-            TaboolibIocConfigurationException("Taboolib IoC 尚未完成项目评估。")
-        )
-        var backendResult = BackendConfigurationResult(configured = false, message = "尚未完成项目评估。")
-
-        doctorTask.configure { task ->
-            task.doLast {
-                val latestResolution = runCatching { resolver.resolve() }
-                project.logger.lifecycle("[taboolibIocDoctor] backend = ${extension.backend.get()}")
-                project.logger.lifecycle("[taboolibIocDoctor] autoTakeover = ${extension.autoTakeover.get()}")
-                project.logger.lifecycle("[taboolibIocDoctor] taboolibApplied = ${resolver.isTaboolibPluginApplied()}")
-                project.logger.lifecycle("[taboolibIocDoctor] taboolibSubproject = ${resolver.isTaboolibSubproject()}")
-                latestResolution.onSuccess {
-                    project.logger.lifecycle("[taboolibIocDoctor] dependency = ${it.dependencySpec.displayName}")
-                    resolver.resolveTestDependencySpec(it.dependencySpec)?.let { testDependencySpec ->
-                        project.logger.lifecycle("[taboolibIocDoctor] testDependency = ${testDependencySpec.displayName}")
-                    }
-                    project.logger.lifecycle(
-                        "[taboolibIocDoctor] relocation = ${it.sourcePackage} -> ${it.targetPackage.relocationTarget} (${it.targetPackage.source})"
-                    )
-                }.onFailure {
-                    project.logger.lifecycle("[taboolibIocDoctor] resolution = FAILED: ${it.message}")
-                }
-                project.logger.lifecycle("[taboolibIocDoctor] configured = ${backendResult.configured}")
-                project.logger.lifecycle("[taboolibIocDoctor] message = ${backendResult.message}")
-            }
-        }
-
-        verifyTask.configure { task ->
-            task.doLast {
-                if (!extension.autoTakeover.get()) {
-                    project.logger.lifecycle("taboolibIoc.autoTakeover=false，已跳过自动接管验证。")
-                    return@doLast
-                }
-
-                val configuration = resolvedConfiguration.getOrElse { throw it }
-                if (configuration.skipBecauseSubproject) {
-                    project.logger.lifecycle("taboolib.subproject=true，已跳过当前子模块的 IoC 自动接管验证。")
-                    return@doLast
-                }
-                if (!backendResult.configured) {
-                    throw TaboolibIocConfigurationException(backendResult.message)
-                }
-                backendFor(configuration.backendId).verify(project, resolver, configuration)
-            }
-        }
-
         project.afterEvaluate {
             val backend = backendFor(extension.backend.get())
-            resolvedConfiguration = runCatching { resolver.resolve() }
-            backendResult = if (!extension.autoTakeover.get()) {
+            // 解析结果与后端接管结果只在本回调内使用（任务输入在此固化），无需提前声明。
+            val resolvedConfiguration = runCatching { resolver.resolve() }
+            val backendResult = if (!extension.autoTakeover.get()) {
                 BackendConfigurationResult(
                     configured = false,
                     message = "taboolibIoc.autoTakeover=false，已跳过自动接管。",
@@ -97,6 +54,10 @@ class TaboolibIocPlugin : Plugin<Project> {
                     },
                 )
             }
+            // 诊断与校验任务的输入在此固化：执行阶段不再触碰 Project/resolver，
+            // 任务状态才能被 Gradle 配置缓存序列化。
+            applyDoctorInputs(doctorTask, extension, resolver, resolvedConfiguration, backendResult)
+            applyVerificationInputs(verifyTask, extension, resolver, resolvedConfiguration, backendResult)
             attachVerificationHooks(project, verifyTask)
         }
     }
@@ -126,8 +87,8 @@ class TaboolibIocPlugin : Plugin<Project> {
 
     private fun registerDoctorTask(
         project: Project,
-    ): TaskProvider<Task> {
-        return project.tasks.register("taboolibIocDoctor") { task ->
+    ): TaskProvider<TaboolibIocDoctorTask> {
+        return project.tasks.register("taboolibIocDoctor", TaboolibIocDoctorTask::class.java) { task ->
             task.group = "taboolib ioc"
             task.description = "Prints the resolved Taboolib IoC backend, dependency and relocation diagnostics."
         }
@@ -135,10 +96,71 @@ class TaboolibIocPlugin : Plugin<Project> {
 
     private fun registerVerifyTask(
         project: Project,
-    ): TaskProvider<Task> {
-        return project.tasks.register("verifyTaboolibIoc") { task ->
+    ): TaskProvider<VerifyTaboolibIocTask> {
+        return project.tasks.register("verifyTaboolibIoc", VerifyTaboolibIocTask::class.java) { task ->
             task.group = "taboolib ioc"
             task.description = "Verifies that Taboolib IoC auto takeover is configured before packaging tasks run."
+        }
+    }
+
+    /**
+     * 把诊断文本固化到 doctor 任务。
+     *
+     * 原先的打印逻辑写在 `doLast` 闭包里，闭包捕获了 Project，任务状态因此无法被
+     * Gradle 配置缓存序列化；现在改为配置阶段生成文本、执行阶段只输出。
+     */
+    private fun applyDoctorInputs(
+        doctorTask: TaskProvider<TaboolibIocDoctorTask>,
+        extension: TaboolibIocExtension,
+        resolver: TaboolibIocResolver,
+        resolution: Result<ResolvedIocConfiguration>,
+        backendResult: BackendConfigurationResult,
+    ) {
+        val lines = mutableListOf<String>()
+        lines += "[taboolibIocDoctor] backend = ${extension.backend.get()}"
+        lines += "[taboolibIocDoctor] autoTakeover = ${extension.autoTakeover.get()}"
+        lines += "[taboolibIocDoctor] taboolibApplied = ${resolver.isTaboolibPluginApplied()}"
+        lines += "[taboolibIocDoctor] taboolibSubproject = ${resolver.isTaboolibSubproject()}"
+        resolution.onSuccess { configuration ->
+            lines += "[taboolibIocDoctor] dependency = ${configuration.dependencySpec.displayName}"
+            resolver.resolveTestDependencySpec(configuration.dependencySpec)?.let { testDependencySpec ->
+                lines += "[taboolibIocDoctor] testDependency = ${testDependencySpec.displayName}"
+            }
+            lines += "[taboolibIocDoctor] relocation = ${configuration.sourcePackage} -> " +
+                "${configuration.targetPackage.relocationTarget} (${configuration.targetPackage.source})"
+        }.onFailure { failure ->
+            lines += "[taboolibIocDoctor] resolution = FAILED: ${failure.message}"
+        }
+        lines += "[taboolibIocDoctor] configured = ${backendResult.configured}"
+        lines += "[taboolibIocDoctor] message = ${backendResult.message}"
+        doctorTask.configure { task -> task.diagnosticLines.set(lines) }
+    }
+
+    private fun applyVerificationInputs(
+        verifyTask: TaskProvider<VerifyTaboolibIocTask>,
+        extension: TaboolibIocExtension,
+        resolver: TaboolibIocResolver,
+        resolution: Result<ResolvedIocConfiguration>,
+        backendResult: BackendConfigurationResult,
+    ) {
+        verifyTask.configure { task ->
+            task.autoTakeover.set(extension.autoTakeover)
+            task.backendConfigured.set(backendResult.configured)
+            task.backendMessage.set(backendResult.message)
+            resolution.exceptionOrNull()?.let { failure ->
+                task.resolutionFailureMessage.set(failure.message ?: failure.javaClass.simpleName)
+            }
+            resolution.getOrNull()?.let { configuration ->
+                // 快照只能在配置阶段采集（relocate 实际值此刻才可读），执行阶段只做判定。
+                val snapshot = collectBackendVerification(resolver, configuration)
+                task.backendId.set(configuration.backendId)
+                task.taboolibPluginApplied.set(snapshot.taboolibPluginApplied)
+                task.skipBecauseSubproject.set(snapshot.skipBecauseSubproject)
+                task.sourcePackage.set(snapshot.sourcePackage)
+                task.expectedRelocation.set(snapshot.expectedRelocation)
+                // 读不到实际 relocate 时不设置该属性（@Optional），执行阶段据此判定为「尚未生效」。
+                snapshot.actualRelocation?.let { actual -> task.actualRelocation.set(actual) }
+            }
         }
     }
 
@@ -151,6 +173,8 @@ class TaboolibIocPlugin : Plugin<Project> {
             task.group = "taboolib ioc"
             task.description = "Builds bean and injection indexes from compiled classes and writes a static diagnosis report."
             task.reportFile.convention(project.layout.buildDirectory.file("reports/taboolib-ioc/static-diagnosis.json"))
+            // 工程路径必须在配置阶段固化：执行阶段读 Task.project 会破坏配置缓存。
+            task.projectPath.set(project.path)
             task.failOnError.convention(extension.analysisFailOnError)
             task.failOnWarning.convention(extension.analysisFailOnWarning)
             task.projectPropertiesInput.convention(
@@ -304,7 +328,7 @@ class TaboolibIocPlugin : Plugin<Project> {
         }
     }
 
-    private fun attachVerificationHooks(project: Project, verifyTask: TaskProvider<Task>) {
+    private fun attachVerificationHooks(project: Project, verifyTask: TaskProvider<VerifyTaboolibIocTask>) {
         val guardedTaskNames = setOf("jar", "assemble", "build")
         // 通过 matching + configureEach 延迟到任务真正注册后再绑定，避免顺序敏感。
         project.tasks.matching { it.name in guardedTaskNames }.configureEach { task ->

@@ -29,6 +29,7 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         task.failOnError.set(false)
         task.failOnWarning.set(false)
         task.projectPropertiesInput.put("feature.enabled", "on")
+        task.projectPath.set(project.path)
         task.reportFile.set(reportFile)
 
         task.generateReport()
@@ -65,6 +66,7 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         task.failOnError.set(true)
         task.failOnWarning.set(false)
         task.projectPropertiesInput.put("feature.enabled", "on")
+        task.projectPath.set(project.path)
         task.reportFile.set(tempDir.resolve("error-gate-report.json").toFile())
 
         val error = assertFailsWith<Exception> {
@@ -94,6 +96,7 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
         task.failOnError.set(false)
         task.failOnWarning.set(true)
         task.projectPropertiesInput.put("feature.enabled", "on")
+        task.projectPath.set(project.path)
         task.reportFile.set(tempDir.resolve("warning-gate-report.json").toFile())
 
         val error = assertFailsWith<Exception> {

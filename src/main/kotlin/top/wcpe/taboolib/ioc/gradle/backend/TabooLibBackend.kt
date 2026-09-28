@@ -60,25 +60,21 @@ internal object TabooLibBackend : PackagingBackend {
         )
     }
 
-    override fun verify(
-        project: Project,
-        resolver: TaboolibIocResolver,
-        configuration: ResolvedIocConfiguration,
-    ) {
-        if (!resolver.isTaboolibPluginApplied()) {
+    override fun verify(input: BackendVerificationInput) {
+        if (!input.taboolibPluginApplied) {
             throw TaboolibIocConfigurationException(
                 "当前工程未应用 io.izzel.taboolib，无法完成 IoC 打包接管。请先 apply io.izzel.taboolib。",
             )
         }
-        if (configuration.skipBecauseSubproject) {
-            project.logger.lifecycle("taboolib.subproject=true，已跳过当前子模块的 IoC 自动接管验证。")
+        // 子模块跳过接管属于预期行为，直接通过；跳过日志由校验任务负责输出。
+        if (input.skipBecauseSubproject) {
             return
         }
 
-        val existingRelocation = resolver.readExistingRelocations()[configuration.sourcePackage]
-        if (existingRelocation != configuration.targetPackage.relocationTarget) {
+        if (input.actualRelocation != input.expectedRelocation) {
             throw TaboolibIocConfigurationException(
-                "IoC relocate 尚未生效。期望 ${configuration.sourcePackage} -> ${configuration.targetPackage.relocationTarget}，实际为 ${existingRelocation ?: "<missing>"}。",
+                "IoC relocate 尚未生效。期望 ${input.sourcePackage} -> ${input.expectedRelocation}，" +
+                    "实际为 ${input.actualRelocation ?: "<missing>"}。",
             )
         }
     }

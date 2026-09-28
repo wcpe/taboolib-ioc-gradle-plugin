@@ -11,6 +11,7 @@ import kotlin.test.assertFailsWith
 import org.gradle.testfixtures.ProjectBuilder
 import top.wcpe.taboolib.ioc.gradle.backend.PackagingBackendId
 import top.wcpe.taboolib.ioc.gradle.backend.StandaloneBackend
+import top.wcpe.taboolib.ioc.gradle.backend.collectBackendVerification
 import top.wcpe.taboolib.ioc.gradle.model.ModuleDependencySpec
 import top.wcpe.taboolib.ioc.gradle.model.ResolvedIocConfiguration
 import top.wcpe.taboolib.ioc.gradle.model.TargetPackageResolution
@@ -123,7 +124,7 @@ class TaboolibIocSupportUnitTest {
         assertFalse(result.configured)
         assertContains(result.message, "尚未实现独立打包引擎")
         val error = assertFailsWith<TaboolibIocConfigurationException> {
-            StandaloneBackend.verify(project, resolver, configuration)
+            StandaloneBackend.verify(collectBackendVerification(resolver, configuration))
         }
         assertContains(error.message ?: "", "改用 backend = TABOOLIB")
     }
