@@ -33,7 +33,7 @@
 ```groovy
 plugins {
     id 'io.izzel.taboolib' version '2.0.38-wcpe.1'
-    id 'top.wcpe.taboolib.ioc' version '0.0.9'
+    id 'top.wcpe.taboolib.ioc' version '0.0.10'
 }
 ```
 
@@ -71,7 +71,7 @@ Kotlin DSL：
 plugins {
     kotlin("jvm") version "1.9.25"
     id("io.izzel.taboolib") version "2.0.38-wcpe.1"
-    id("top.wcpe.taboolib.ioc") version "0.0.9"
+    id("top.wcpe.taboolib.ioc") version "0.0.10"
 }
 
 group = "com.example.demo"
