@@ -4,6 +4,15 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.0.11] - 2026-09-29
+
+### 变更
+
+- **静态诊断任务支持 Gradle build cache**：`analyzeTaboolibIocBeans` 此前被标记为不可缓存，clean 构建每次都要重新扫描全部依赖 jar。现已改为可缓存任务：
+  - **报告中的源码路径改为相对源码根**（如 `fixture/Foo.java`）—— 这是缓存可复用的前提：绝对路径会随缓存条目一起被复用，指向构建机上的错误位置；
+  - 本地实测：clean 构建时四个模块的分析任务全部 `FROM-CACHE`，整次 clean build 14.8s → 3s；
+  - 注意：CI 若未配置 build cache 持久化（`gradle/actions/setup-gradle`），则不会获得该收益。
+
 ## [0.0.10] - 2026-09-29
 
 ### 变更
