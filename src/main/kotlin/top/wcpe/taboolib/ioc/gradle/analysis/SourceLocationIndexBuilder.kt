@@ -14,10 +14,11 @@ internal object SourceLocationIndexBuilder {
             .filter { Files.exists(it) }
             .distinct()
             .forEach { directory ->
-                Files.walk(directory).use { stream ->
+                val sourceRoot = directory.toAbsolutePath().normalize()
+                Files.walk(sourceRoot).use { stream ->
                     stream.filter { Files.isRegularFile(it) && (it.toString().endsWith(".java") || it.toString().endsWith(".kt")) }
                         .forEach { file ->
-                            scanFile(file).forEach { entry ->
+                            scanFile(file, sourceRoot).forEach { entry ->
                                 classEntries.putIfAbsent(entry.className, entry)
                             }
                         }
@@ -26,7 +27,7 @@ internal object SourceLocationIndexBuilder {
         return SourceLocationIndex(classEntries)
     }
 
-    private fun scanFile(file: Path): List<SourceClassEntry> {
+    private fun scanFile(file: Path, sourceRoot: Path): List<SourceClassEntry> {
         val lines = Files.readAllLines(file)
         val packageName = lines.firstNotNullOfOrNull { line ->
             packageRegex.matchEntire(line)?.groupValues?.getOrNull(1)
@@ -45,7 +46,7 @@ internal object SourceLocationIndexBuilder {
             SourceClassEntry(
                 className = className,
                 simpleName = match.simpleName,
-                filePath = file.toAbsolutePath().normalize(),
+                filePath = sourceRoot.relativize(file.toAbsolutePath().normalize()),
                 lines = lines,
                 startLine = match.line,
                 endLine = endLine,
