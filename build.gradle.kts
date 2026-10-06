@@ -85,6 +85,23 @@ publishing {
             name.set("Taboolib IoC Gradle Plugin")
             description.set("Automates TabooLib IoC embedding and relocation for TabooLib consumer builds.")
             url.set(projectWebsite)
+            licenses {
+                // 与仓库根目录 LICENSE 保持一致：Maven 自身并不强制 POM 携带许可证，
+                // 这里补齐是为了满足开源分发与 Central 类仓库的元数据期望，
+                // 并让下游能直接从元数据判断授权范围（自建 Nexus 不做该校验）。
+                license {
+                    name.set("MIT License")
+                    url.set("https://opensource.org/licenses/MIT")
+                    distribution.set("repo")
+                }
+            }
+            developers {
+                // 版权人：仓库属主、group 前缀 top.wcpe.* 与 maven.wcpe.top 均为同一主体。
+                developer {
+                    id.set("wcpe")
+                    name.set("wcpe")
+                }
+            }
             scm {
                 url.set(projectWebsite)
                 connection.set(projectScmConnection)

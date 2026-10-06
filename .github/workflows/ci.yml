@@ -1,8 +1,36 @@
 name: CI
 
 on:
+  # 纯文档变更（README/CHANGELOG/docs/许可证）跳过整套构建：本工作流会跑
+  # `build ciTest` + 发布到隔离 Maven + 编译两个 example，耗时以分钟计，而文档改动
+  # 不可能影响其中任何一步。
+  #
+  # 刻意**不**忽略 `.github/**`：若忽略，改动本工作流自身的 PR 就不会触发任何 CI，
+  # 写坏了也无人发现。工作流文件的改动必须照常跑一遍。
+  #
+  # 注意：GitHub 的必需状态检查是**按 check 名匹配**的，并不存在「把某个路径从必需检查
+  # 中排除」的开关。一旦对 `master` 启用分支保护并把本工作流的 job 设为必需，命中
+  # paths-ignore 的纯文档 PR 会让本工作流整体不产生任何 check，从而永久卡在
+  # "Expected — Waiting for status to be reported"。可落地的做法只有让被要求的 check 名
+  # **恒有 job 运行**：
+  #   1) 保留一个不带 paths-ignore 的轻量 gate job（例如只跑 checkout + 打印结论），
+  #      把它的名字设为必需检查，重活 job 通过 `needs:` 挂在它后面；
+  #   2) 或用 `dorny/paths-filter` 在 job 内部过滤变更，让重活 job 以
+  #      `if: needs.changes.outputs.docs != 'true'` 的形式跳过（跳过的 job 会汇报为
+  #      success，必需检查不会卡住）。
+  # 当前 `master` **尚未启用分支保护**（`gh api repos/wcpe/taboolib-ioc-gradle-plugin/branches/master/protection`
+  # 返回 404），因此该风险尚未生效；在开启分支保护前先按上面的方式改造。
+  #
+  # 另外：下列清单里的 `docs/**` 已被 `**/*.md` 完全覆盖（`docs/` 下当前只有 Markdown），
+  # 保留它只是为了将来 `docs/` 目录出现非 Markdown 资产时仍能跳过，不代表它是独立规则。
   push:
+    paths-ignore: &docs-only
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
+    paths-ignore: *docs-only
   workflow_dispatch:
 
 permissions:
