@@ -3,9 +3,12 @@ package top.wcpe.taboolib.ioc.gradle
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.Task
+import org.gradle.api.UnknownTaskException
+import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.language.base.plugins.LifecycleBasePlugin
 import org.gradle.api.tasks.TaskProvider
+import org.gradle.api.tasks.bundling.Jar
 import top.wcpe.taboolib.ioc.gradle.analysis.AnalyzeTaboolibIocBeansTask
 import top.wcpe.taboolib.ioc.gradle.backend.BackendConfigurationResult
 import top.wcpe.taboolib.ioc.gradle.backend.collectBackendVerification
@@ -15,9 +18,12 @@ import top.wcpe.taboolib.ioc.gradle.backend.StandaloneBackend
 import top.wcpe.taboolib.ioc.gradle.backend.TabooLibBackend
 import top.wcpe.taboolib.ioc.gradle.model.ResolvedIocConfiguration
 import top.wcpe.taboolib.ioc.gradle.model.ProjectDependencySpec
+import top.wcpe.taboolib.ioc.gradle.weaving.PlanTaboolibIocAopTask
+import top.wcpe.taboolib.ioc.gradle.weaving.WEAVE_PLAN_RELATIVE_PATH
 import top.wcpe.taboolib.ioc.gradle.task.TaboolibIocDoctorTask
 import top.wcpe.taboolib.ioc.gradle.task.VerifyTaboolibIocTask
 import top.wcpe.taboolib.ioc.gradle.weaving.WeaveTaboolibIocAopTask
+import java.io.File
 
 class TaboolibIocPlugin : Plugin<Project> {
 
@@ -27,9 +33,34 @@ class TaboolibIocPlugin : Plugin<Project> {
 
         val resolver = TaboolibIocResolver(project, extension)
         val analysisTask = registerAnalysisTask(project, extension, resolver)
+        val planTask = registerPlanTask(project, extension)
         val weaveTask = registerWeaveTask(project, extension)
         weaveTask.configure { it.mustRunAfter(analysisTask) }
         attachWeavingHooks(project, weaveTask)
+        // 关键顺序 `plan → analyze → weave`：**仅 `weaving=true` 时**建立计划依赖边与顺序，
+        // `weaving=false` 时任务图与既有行为逐字一致（plan 任务 `enabled=false`，不加任何依赖）。
+        //
+        // 求值点必须与「`weaving` 的最终值」对齐：`weaving` 是惰性 convention（任务执行期才读），
+        // 而 `afterEvaluate` 只是配置期的**某一个**瞬间。消费方在自己的 `afterEvaluate {}` 里打开
+        // weaving 时，本插件的 `afterEvaluate` 早已读过 false，就会留下「weaving=true 但没有织入计划」
+        // 的静默不一致（诊断按保守语义不抑制，且没有任何提示）。
+        // `projectsEvaluated` 在所有工程的 `afterEvaluate` 之后、任务图计算之前触发，是配置期最后一个
+        // 能读到扩展最终值的观测点：既不会漏掉晚到的开关，也不会晚到错过依赖边收集。
+        project.gradle.projectsEvaluated {
+            if (extension.weaving.getOrElse(false)) {
+                analysisTask.configure { task ->
+                    task.mustRunAfter(planTask)
+                    // 计划文件在 `-x planTaboolibIocAop` / `enabled=false` 时永不产出，
+                    // 因此 analyze 侧必须用「允许缺失」的输入形态接收（缺失即视为无计划）：
+                    // 否则 Gradle 抛出的「输入文件不存在」会把真实原因（计划任务被排除）掩盖成输入缺失。
+                    task.weavePlanFile.set(planTask.flatMap { it.reportFile })
+                }
+                weaveTask.configure { task ->
+                    task.mustRunAfter(planTask)
+                    task.planFile.set(planTask.flatMap { it.reportFile })
+                }
+            }
+        }
         val doctorTask = registerDoctorTask(project)
         val verifyTask = registerVerifyTask(project)
         registerDependencyHooks(project, extension, resolver)
@@ -177,6 +208,8 @@ class TaboolibIocPlugin : Plugin<Project> {
             task.projectPath.set(project.path)
             task.failOnError.convention(extension.analysisFailOnError)
             task.failOnWarning.convention(extension.analysisFailOnWarning)
+            // 诊断任务必须感知织入开关，才能对 AOP 规则做条件化（用 convention 保持可覆盖、惰性）。
+            task.weaving.convention(extension.weaving)
             task.projectPropertiesInput.convention(
                 project.provider {
                     project.properties.entries.mapNotNull { (key, value) ->
@@ -234,7 +267,77 @@ class TaboolibIocPlugin : Plugin<Project> {
                 task.dependsOn(dependencyProject.tasks.named(mainSourceSet.classesTaskName))
             }
         }
+        attachProjectDependencySources(project, taskProvider)
         return taskProvider
+    }
+
+    private fun attachProjectDependencySources(project: Project, taskProvider: TaskProvider<AnalyzeTaboolibIocBeansTask>) {
+        project.gradle.projectsEvaluated {
+            val sourcesByArtifactFile = collectProjectDependencySources(project)
+            taskProvider.configure { task ->
+                // 只保留实际扫描工件的源码；映射闭包仅捕获文件快照，不能携带工程或配置对象。
+                task.sourceDirectories.from(task.dependencyArtifacts.elements.map { artifacts ->
+                    // `@InputFiles` 的 RELATIVE 指纹对顺序不敏感，而 `elements` 的迭代序来自 Set：
+                    // 先显式排序再 distinct，结果才与迭代序无关，避免「输入指纹相同、报告却不同」污染构建缓存。
+                    artifacts.flatMap { artifact ->
+                        sourcesByArtifactFile[artifact.asFile.absoluteFile.normalize()].orEmpty()
+                    }.sortedBy { it.path }.distinct()
+                })
+            }
+        }
+    }
+
+    private fun collectProjectDependencySources(project: Project): Map<File, List<File>> {
+        val pending = ArrayDeque<Project>()
+        pending.add(project)
+        val visited = mutableSetOf<String>()
+        val sourcesByArtifactFile = linkedMapOf<File, List<File>>()
+        while (pending.isNotEmpty()) {
+            val dependencyProject = pending.removeFirst()
+            if (!visited.add(dependencyProject.path)) continue
+            sourcesByArtifactFile.putAll(mainSourceArtifacts(dependencyProject))
+            pending.addAll(declaredProjectDependencies(dependencyProject))
+        }
+        // 可诊断性：工件→源码映射一旦未命中就**完全静默**，而后果是跨模块字段被误报
+        // missing-inject-annotation（ERROR，默认阻断构建），用户极难归因。这里在 --info 下
+        // 给出被索引的工件数，让「0 个工件」这类明显失效至少能被看见。
+        // 精确列出「哪些 artifact 未命中」需要解析消费方类路径，会破坏配置缓存期的惰性，故未做。
+        project.logger.info(
+            "[taboolibIoc] 已为 ${sourcesByArtifactFile.size} 个依赖工件建立源码映射；" +
+                "未命中的工件不会补入源码，其注入点将缺少定位（见 README 的依赖源码补齐说明）。",
+        )
+        return sourcesByArtifactFile.toMap()
+    }
+
+    private fun mainSourceArtifacts(project: Project): Map<File, List<File>> {
+        val javaExtension = project.extensions.findByType(JavaPluginExtension::class.java) ?: return emptyMap()
+        val mainSourceSet = javaExtension.sourceSets.findByName("main") ?: return emptyMap()
+        val sources = mainSourceSet.allSource.srcDirs.map { it.absoluteFile.normalize() }
+        val artifacts = mainSourceSet.output.classesDirs.files.toMutableSet()
+        // 惰性访问 jar 任务：`named` 返回 provider 而不是任务实例，因此查找本身不实现任务；
+        // 但下面求值 provider 时**有意 realize** jar 任务 —— 工件→源码映射必须提前知道 jar 的落盘路径，
+        // 该路径由 Jar 任务的 archiveFile 提供，无法在不实现任务的前提下推断（archiveFileName 可被改写）。
+        // 仅吞掉「没有 jar 任务」（未应用 java 插件的工程）：任务存在但配置动作报错时必须照常冒泡。
+        val jarArchiveFile = try {
+            project.tasks.named("jar", Jar::class.java).flatMap { it.archiveFile }.orNull
+        } catch (_: UnknownTaskException) {
+            null
+        }
+        jarArchiveFile?.asFile?.let(artifacts::add)
+        return artifacts.associate { it.absoluteFile.normalize() to sources }
+    }
+
+    private fun declaredProjectDependencies(project: Project): List<Project> {
+        val mainSourceSet = project.extensions.findByType(JavaPluginExtension::class.java)?.sourceSets?.findByName("main")
+        val configurationNames = listOfNotNull(mainSourceSet?.compileClasspathConfigurationName,
+            TaboolibIocResolver.TABOO_CONFIGURATION_NAME)
+        return configurationNames.flatMap { name ->
+            project.configurations.findByName(name)?.allDependencies?.withType(ProjectDependency::class.java)
+                ?.mapNotNull { dependency ->
+                    // Gradle 8.9 与 9.x 的项目依赖路径 API 互斥，读取统一收敛到 ReflectionSupport。
+                    ReflectionSupport.projectDependencyPath(dependency)?.let(project::findProject)
+                }.orEmpty()
+        }
     }
 
     private fun registerDependencyHooks(
@@ -284,6 +387,43 @@ class TaboolibIocPlugin : Plugin<Project> {
     }
 
     /**
+     * 主源集编译输出的**惰性**文件集合。
+     *
+     * 惰性解析：插件可能被应用在尚未启用 java 插件的工程上（例如单测的 ProjectBuilder），
+     * 此时直接取 JavaPluginExtension/sourceSets 会抛异常。classesDirs 自带 builtBy，
+     * 解析时机在任务图计算阶段，任务依赖仍会被自动推断。
+     */
+    private fun mainClassesDirs(project: Project): Any = project.files(
+        java.util.concurrent.Callable {
+            project.extensions.findByType(JavaPluginExtension::class.java)
+                ?.sourceSets
+                ?.findByName("main")
+                ?.output
+                ?.classesDirs
+        }
+    )
+
+    /**
+     * 织入计划任务（`planTaboolibIocAop`）：对原始字节码跑 [AopWeaver.plan]，产出 `aop-weave-plan.json`。
+     *
+     * 默认由扩展属性 `weaving` 设置 `Task.enabled`：`weaving=false` 时直接 SKIPPED，任务图零改动。
+     * 输出文件被 `analyzeTaboolibIocBeans` 消费（抑制判据的**唯一事实来源**）。
+     */
+    private fun registerPlanTask(
+        project: Project,
+        extension: TaboolibIocExtension,
+    ): TaskProvider<PlanTaboolibIocAopTask> {
+        return project.tasks.register("planTaboolibIocAop", PlanTaboolibIocAopTask::class.java) { task ->
+            task.group = "taboolib ioc"
+            task.description = "Computes which classes/methods will be woven by the compile-time AOP weaver for diagnosis."
+            // 用 Gradle 原生 enabled：关闭时任务直接 SKIPPED，不进 TaskAction
+            task.enabled = extension.weaving.get()
+            task.classDirectories.from(mainClassesDirs(project))
+            task.reportFile.convention(project.layout.buildDirectory.file(WEAVE_PLAN_RELATIVE_PATH))
+        }
+    }
+
+    /**
      * 把 `verifyTaboolibIoc` 挂到打包任务（jar / assemble / build）之前。
      *
      * 应用顺序守护：
@@ -299,24 +439,12 @@ class TaboolibIocPlugin : Plugin<Project> {
         project: Project,
         extension: TaboolibIocExtension,
     ): TaskProvider<WeaveTaboolibIocAopTask> {
-        // 惰性解析：插件可能被应用在尚未启用 java 插件的工程上（例如单测的 ProjectBuilder），
-        // 此时直接取 JavaPluginExtension/sourceSets 会抛异常。classesDirs 自带 builtBy，
-        // 解析时机在任务图计算阶段，任务依赖仍会被自动推断。
-        val classDirectories = project.files(
-            java.util.concurrent.Callable {
-                project.extensions.findByType(JavaPluginExtension::class.java)
-                    ?.sourceSets
-                    ?.findByName("main")
-                    ?.output
-                    ?.classesDirs
-            }
-        )
         return project.tasks.register("weaveTaboolibIocAop", WeaveTaboolibIocAopTask::class.java) { task ->
             task.group = "taboolib ioc"
             task.description = "Weaves AOP advice into matched methods at build time (works for concrete classes)."
             // 用 Gradle 原生 enabled：关闭时任务直接 SKIPPED，不进 TaskAction
             task.enabled = extension.weaving.get()
-            task.classDirectories.from(classDirectories)
+            task.classDirectories.from(mainClassesDirs(project))
         }
     }
 

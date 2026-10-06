@@ -96,6 +96,17 @@ class TaboolibIocSupportUnitTest {
     }
 
     @Test
+    fun reflectionSupportUnwrapsInvocationTargetException() {
+        // `Method.invoke` 会把目标异常包成 InvocationTargetException，而它的 message **恒为 null**：
+        // 直接放它出去，用户只会看到一个没有原因的异常名，得自己去翻 cause 链。
+        val error = assertFailsWith<TaboolibIocConfigurationException> {
+            ReflectionSupport.invokeMethod(0, "parseInt", "not-a-number")
+        }
+        assertContains(error.message ?: "", "parseInt")
+        assertTrue(error.cause is NumberFormatException, "必须把目标异常挂成 cause，而不是只留一个 null message")
+    }
+
+    @Test
     fun standaloneBackendReturnsHelpfulMessages() {
         val project = ProjectBuilder.builder()
             .withName("standalone")

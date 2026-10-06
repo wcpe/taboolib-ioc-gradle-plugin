@@ -202,7 +202,9 @@ class TabooLibBackendUnitTest {
 
         val dependencies = tabooConfiguration.dependencies.filterIsInstance<ProjectDependency>()
         assertEquals(1, dependencies.size)
-        assertEquals(":ioc-lib", dependencies.single().dependencyProject.path)
+        // 路径读取走与插件同一套兼容实现：Gradle 8.9 只有 dependencyProject、9.x 只有 path，
+        // 这里在编译期版本（8.14.4，两者都有）上先钉住 helper 的主分支读取结果。
+        assertEquals(":ioc-lib", ReflectionSupport.projectDependencyPath(dependencies.single()))
     }
 
     @Test

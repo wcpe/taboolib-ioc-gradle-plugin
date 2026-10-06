@@ -19,7 +19,13 @@ abstract class TaboolibIocExtension @Inject constructor(objects: ObjectFactory) 
 
     val localProjectPath: Property<String> = objects.property(String::class.java)
 
-    /** 是否开启**编译期 AOP 织入**（默认关闭）。 */
+    /**
+     * 是否开启**编译期 AOP 织入**（默认关闭）。
+     *
+     * 该开关**同时被诊断与织入消费**：`weaveTaboolibIocAop` 任务据此决定是否改写字节码；
+     * `analyzeTaboolibIocBeans` 任务据此对 AOP 静默失效规则做条件化
+     * （例如织入开启且目标类可被织入时抑制 `aop-target-not-proxied` 误报）。
+     */
     val weaving: Property<Boolean> = objects.property(Boolean::class.java)
 
     val analysisFailOnError: Property<Boolean> = objects.property(Boolean::class.java)
