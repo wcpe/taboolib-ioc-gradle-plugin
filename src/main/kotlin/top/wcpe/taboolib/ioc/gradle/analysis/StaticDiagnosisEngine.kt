@@ -1362,7 +1362,12 @@ internal object StaticDiagnosisEngine {
                                     if (forwarded.isEmpty()) {
                                         emptySet()
                                     } else {
-                                        matched.filter { it.methodPattern == "*" || it.methodPattern in forwarded }
+                                        // `*` 同样不能放行：它匹配该类的**每一个**方法，而计划只转发了
+                                        // 其中一部分（forwarded 是残渣里真实存在的合成方法名）。只要有一个
+                                        // 被 `*` 命中的方法没被转发，这条通知就没有被完整实现 —— 例如新增的
+                                        // execution 全通配切点会命中 load()，而残渣里从未转发过它。
+                                        // 按保守方向（宁可多报）：`*` 一律不计入已实现。
+                                        matched.filter { it.methodPattern != "*" && it.methodPattern in forwarded }
                                             .map { "${it.aspectClassName}#${it.advice.methodName}" }
                                             .toSet()
                                     }

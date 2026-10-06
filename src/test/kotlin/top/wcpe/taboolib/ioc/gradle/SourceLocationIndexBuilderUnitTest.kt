@@ -1033,6 +1033,27 @@ class SourceLocationIndexBuilderUnitTest {
     }
 
     @Test
+    @DisplayName("源文件带 UTF-8 BOM 时类型仍须拿到包名")
+    fun keepsPackageNameWhenSourceHasBom() {
+        // 行首 U+FEFF 既不匹配 `\s` 也不被解码器丢弃：不剥掉的话 `^\s*package` 失配，整份文件
+        // 拿到空包名，所有类型的 FQCN 退化成简单名，诊断的抑制随之全面失效 —— 合法字段被报成
+        // 缺失注入（ERROR，默认阻断构建）。带 BOM 的文件是合法输入。
+        val sourceRoot = tempDir.resolve("nestedSources")
+        sourceRoot.createDirectories()
+        val content = String(charArrayOf(0xFEFF.toChar())) + """
+            package fixture.nested
+
+            class Foo { var service: Service? = null }
+            class Service
+        """.trimIndent()
+        sourceRoot.resolve("Nested.kt").writeText(content)
+        assertTrue(
+            nestedFieldOrNull("Foo") != null,
+            "带 BOM 时 Foo 仍须以 fixture.nested.Foo 建索引，否则抑制失效、合法字段被误报",
+        )
+    }
+
+    @Test
     @DisplayName("by 委托类的成员类型不得因下一条同行声明而丢条目")
     fun keepsMembersOfDelegatedClassWhenFollowingDeclarationHasBody() {
         // `isDelegateBraceGroup` 原先在 `{` 处直接 return true，同行新声明的熔断只在 '\n' 处求值，

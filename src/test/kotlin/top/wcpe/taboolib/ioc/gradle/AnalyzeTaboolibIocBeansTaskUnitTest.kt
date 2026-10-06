@@ -17,6 +17,7 @@ import top.wcpe.taboolib.ioc.gradle.weaving.ClassWeaveDecision
 import top.wcpe.taboolib.ioc.gradle.weaving.WeaveOutcome
 import top.wcpe.taboolib.ioc.gradle.weaving.WeavePlan
 import top.wcpe.taboolib.ioc.gradle.weaving.WeavePlanJson
+import top.wcpe.taboolib.ioc.gradle.weaving.WovenMethod
 
 class AnalyzeTaboolibIocBeansTaskUnitTest {
 
@@ -182,6 +183,66 @@ class AnalyzeTaboolibIocBeansTaskUnitTest {
             "`*` 通配通知不得在 forwarded 为空（哨兵态）时被当作已实现",
         )
     }
+    /**
+     * `forwarded` **非空**时 `*` 通配同样不得计入已实现 —— 这是独立于哨兵态的另一条分支。
+     *
+     * `*` 匹配该类的每一个方法，而计划只转发了其中一部分。只要有一个被 `*` 命中的方法没被转发，
+     * 这条通知就没有被完整实现：典型场景是本地残渣只转发过 save()，之后新增全通配切点，它还会
+     * 命中从未转发过的 load()。旧写法在这里直接放行 `*`，于是新增切点永不补织、报告一片干净。
+     */
+    @Test
+    fun keepsWildcardAdviceUnrealizedWhenResiduePlanForwardedOnlySomeMethods() {
+        val classesDir = StaticDiagnosisFixtureSources
+            .compileAopWeavingWildcardSources(tempDir.resolve("residue-partial"))
+        val sourceDir = tempDir.resolve("residue-partial/src")
+        val index = BytecodeBeanIndexBuilder.build(listOf(classesDir), listOf(sourceDir))
+        val advices = AopWeavePlanner.resolve(index.aspectIndex)
+        val decisions = Files.walk(classesDir).use { stream ->
+            stream
+                .filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
+                .map { file -> AopWeaver.plan(Files.readAllBytes(file), advices) }
+                .filter { it != null }
+                .map { it!! }
+                .map { decision ->
+                    if (decision.outcome == WeaveOutcome.WOVEN) {
+                        ClassWeaveDecision(
+                            className = decision.className,
+                            outcome = decision.outcome,
+                            alreadyWoven = true,
+                            wovenMethods = listOf(WovenMethod("forwardedOnly", "()V", emptyList())),
+                        )
+                    } else {
+                        decision
+                    }
+                }
+                .toList()
+        }
+        val planFile = tempDir.resolve("aop-weave-plan-residue-partial.json")
+        WeavePlanJson.write(WeavePlan(adviceCount = advices.size, classes = decisions), planFile)
+
+        val project = ProjectBuilder.builder()
+            .withName("analysis-residue-partial")
+            .withProjectDir(Files.createTempDirectory("analysis-residue-partial").toFile())
+            .build()
+        val task = project.tasks.create("analyzeTaboolibIocBeans", AnalyzeTaboolibIocBeansTask::class.java)
+        task.classDirectories.from(classesDir.toFile())
+        task.sourceDirectories.from(sourceDir.toFile())
+        task.failOnError.set(false)
+        task.failOnWarning.set(false)
+        task.projectPath.set(project.path)
+        task.weaving.set(true)
+        task.weavePlanFile.set(planFile.toFile())
+        val reportFile = tempDir.resolve("residue-partial-report.json").toFile()
+        task.reportFile.set(reportFile)
+
+        task.generateReport()
+
+        assertTrue(
+            reportFile.readText().contains("WildcardAspect#any"),
+            "forwarded 非空时 `*` 仍会命中未转发的方法，不得计入已实现",
+        )
+    }
+
 
     @Test
     fun failsWhenErrorGateEnabled() {

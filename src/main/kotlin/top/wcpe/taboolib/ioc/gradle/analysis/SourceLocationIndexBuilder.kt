@@ -101,6 +101,11 @@ internal fun readSourceText(file: Path): String {
             .onUnmappableCharacter(CodingErrorAction.REPLACE)
             .decode(ByteBuffer.wrap(bytes))
             .toString()
+            // 首部 BOM 必须剥掉：行首的 U+FEFF 既不匹配 `\s`（Java 的 \s 是 ASCII 白名单），
+            // 也不被解码器丢弃，于是 `^\s*package` 失配 → 整份文件拿到空包名 → 所有类型的 FQCN
+            // 退化成简单名 → 诊断的抑制全面失效，合法字段被报成缺失注入（ERROR，默认阻断构建）。
+            // 带 BOM 的文件是合法输入（编译器自身会忽略 BOM），不能当异常处理。
+            .removePrefix("﻿")
     } catch (exception: IOException) {
         // 真正的读取失败（文件被删 / 无权限）仍要抛，但必须把路径带进异常信息。
         throw IOException("读取源码文件失败：$file", exception)
