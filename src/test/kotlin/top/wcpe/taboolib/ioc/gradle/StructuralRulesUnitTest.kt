@@ -10,6 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import org.junit.jupiter.api.io.TempDir
+import org.objectweb.asm.Opcodes
 import top.wcpe.taboolib.ioc.gradle.analysis.BeanKind
 import top.wcpe.taboolib.ioc.gradle.analysis.BytecodeAnalysisIndex
 import top.wcpe.taboolib.ioc.gradle.analysis.BytecodeBeanIndexBuilder
@@ -147,18 +148,18 @@ class StructuralRulesUnitTest {
                 classEntry(
                     "com.example.ConcreteWorker",
                     methods = listOf(
-                        CollectedMethodInfo("doWork", isPrivate = false, isStatic = false),
-                        CollectedMethodInfo("secret", isPrivate = true, isStatic = false),
+                        CollectedMethodInfo("doWork", access = Opcodes.ACC_PUBLIC),
+                        CollectedMethodInfo("secret", access = Opcodes.ACC_PRIVATE),
                     ),
                 ),
                 classEntry(
                     "com.example.WorkerApi",
                     isInterface = true,
-                    methods = listOf(CollectedMethodInfo("doWork", isPrivate = false, isStatic = false)),
+                    methods = listOf(CollectedMethodInfo("doWork", access = Opcodes.ACC_PUBLIC)),
                 ),
                 classEntry(
                     "com.example.InterfaceWorker",
-                    methods = listOf(CollectedMethodInfo("doWork", isPrivate = false, isStatic = false)),
+                    methods = listOf(CollectedMethodInfo("doWork", access = Opcodes.ACC_PUBLIC)),
                 ),
             ),
             beanIndex = listOf(
@@ -268,7 +269,7 @@ class StructuralRulesUnitTest {
             classIndex = listOf(
                 classEntry(
                     "com.example.ConcreteWorker",
-                    methods = listOf(CollectedMethodInfo("doWork", isPrivate = false, isStatic = false)),
+                    methods = listOf(CollectedMethodInfo("doWork", access = Opcodes.ACC_PUBLIC)),
                 ),
             ),
             beanIndex = emptyList(),

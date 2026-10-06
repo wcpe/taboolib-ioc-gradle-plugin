@@ -15,6 +15,10 @@ import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
+import org.gradle.work.DisableCachingByDefault
+import top.wcpe.taboolib.ioc.gradle.weaving.WeavePlan
+import top.wcpe.taboolib.ioc.gradle.weaving.WeavePlanJson
+import java.io.File
 import javax.inject.Inject
 
 @CacheableTask
@@ -50,6 +54,34 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
     abstract val projectPropertiesInput: MapProperty<String, String>
 
     /**
+     * 编译期 AOP 织入开关（`taboolibIoc { weaving }`）。
+     *
+     * 进入 `@Input` 后，改开关会触发本任务重跑（诊断结论随织入状态变化）。
+     * 默认由扩展的 `weaving` 约定提供，保持可覆盖、惰性求值。
+     */
+    @get:Input
+    abstract val weaving: Property<Boolean>
+
+    /**
+     * 织入计划文件（`aop-weave-plan.json`），由 `planTaboolibIocAop` 产出。
+     *
+     * **仅 `weaving=true` 时**由插件设置为 `planTaboolibIocAop` 的输出（携带任务依赖）；
+     * `weaving=false` 时不设置 → 任务图与既有行为逐字一致。
+     *
+     * 声明为 **`@InputFiles`**（而不是 `@InputFile`）是刻意的：`weaving=true` 时计划任务仍可能
+     * 被 `-x planTaboolibIocAop` 排除或 `enabled=false`，文件永不产出；而 `@InputFile` 一旦有值却缺文件，
+     * Gradle 会直接以「输入文件不存在」失败，报错原因与真实原因（计划任务被排除）毫无关系。
+     * 改按允许缺失的形态接收后，缺失只是「没有计划」，与下面的保守语义严格一致。
+     *
+     * 该文件是 `aop-target-not-proxied` 抑制判据的**唯一事实来源**：缺失 / 解析失败 / schema 不符
+     * 一律视为「无计划」→ 诊断保守不抑制（**绝不退回预测**）。
+     */
+    @get:InputFiles
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val weavePlanFile: RegularFileProperty
+
+    /**
      * 当前工程路径。
      *
      * 由插件在配置阶段写入，**不能**在执行阶段读取 `Task.project`：
@@ -63,12 +95,28 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
 
     @TaskAction
     fun generateReport() {
+        val weavingEnabled = weaving.getOrElse(false)
         val scanRoots = (classDirectories.files + dependencyArtifacts.files)
             .filter { it.exists() }
             .map { it.toPath() }
         val sourceRoots = sourceDirectories.files.filter { it.exists() }.map { it.toPath() }
         val typeAliases = SourceTypeAliasIndexBuilder.build(sourceRoots)
         val index = BytecodeBeanIndexBuilder.build(scanRoots, sourceRoots)
+
+        // 抑制与降级原本全静默：报告里少了某条诊断时无从解释。这里给一行可诊断的摘要，
+        // 明细随报告落盘（sourceIndexDegradations / suppressedMissingInjections）。
+        if (index.suppressedMissingInjections.isNotEmpty()) {
+            logger.info(
+                "[taboolibIoc] 已按源码事实抑制 ${index.suppressedMissingInjections.size} 条 missing-inject 候选" +
+                    "（字段已有初值或已手工装配）；明细见报告 suppressedMissingInjections。",
+            )
+        }
+        if (index.sourceIndexDegradations.isNotEmpty()) {
+            logger.warn(
+                "[taboolibIoc] 源码索引出现 ${index.sourceIndexDegradations.size} 条降级" +
+                    "（目前只覆盖「同名类型冲突」这一种），诊断结论可能偏保守；明细见报告 sourceIndexDegradations。",
+            )
+        }
 
         // D2 修复：ConditionalOnClass 的类名指向被扫描工程及其依赖里的类。
         // 用扫描根构建 ClassLoader 供引擎探测，否则插件自身 ClassLoader 必然找不到这些类，
@@ -84,6 +132,11 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
             scanRoots.map { it.toUri().toURL() }.toTypedArray(),
             parentClassLoader,
         )
+        // 织入计划（事实）：缺失 / 解析失败 / schema 不符 → null → 诊断保守不抑制。
+        val weavePlan: WeavePlan? = weavePlanFile.orNull
+            ?.asFile
+            ?.toPath()
+            ?.let { WeavePlanJson.read(it) }
         val report = scanClassLoader.use {
             StaticDiagnosisEngine.analyze(
                 projectPath = projectPath.get(),
@@ -91,8 +144,12 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
                 typeAliases = typeAliases,
                 projectProperties = projectPropertiesInput.getOrElse(emptyMap()),
                 scanClassLoader = it,
+                weaving = weavingEnabled,
+                weavePlan = weavePlan,
             )
         }
+        warnIfWovenResidue(index, weavingEnabled)
+
         val outputFile = reportFile.get().asFile.toPath()
         StaticAnalysisJsonWriter.write(report, outputFile)
 
@@ -114,6 +171,37 @@ abstract class AnalyzeTaboolibIocBeansTask : DefaultTask() {
             throw GradleException(buildFailureMessage(report, DiagnosticSeverity.WARNING, outputFile.toString(), "failOnWarning"))
         }
     }
+
+    /**
+     * 残渣告警（§2.3.7）：读取 `classDirectories`（编译输出）时检出「已织入字节」即 `logger.warn`。
+     *
+     * `weaving=false` 时为**高危告警**（jar 可能已被织入却不符当前开关）。绝不静默。
+     */
+    private fun warnIfWovenResidue(index: BytecodeAnalysisIndex, weaving: Boolean) {
+        val outputClassNames = classDirectories.files
+            .filter { it.isDirectory }
+            .flatMap { classNamesUnder(it) }
+            .toSet()
+        if (outputClassNames.isEmpty()) {
+            return
+        }
+        val residue = WovenResidueDetector.detectResidueClassNames(index, outputClassNames)
+        if (residue.isNotEmpty()) {
+            logger.warn(WovenResidueDetector.warningMessage(residue, weaving))
+        }
+    }
+
+    /** 收集目录下所有 `.class` 文件的点号 FQCN。 */
+    private fun classNamesUnder(root: File): List<String> =
+        root.walkTopDown()
+            .filter { it.isFile && it.extension == "class" }
+            .map { file ->
+                file.relativeTo(root).path
+                    .removeSuffix(".class")
+                    .replace(File.separatorChar, '.')
+                    .replace('/', '.')
+            }
+            .toList()
 
     private fun buildFailureMessage(
         report: StaticAnalysisReport,

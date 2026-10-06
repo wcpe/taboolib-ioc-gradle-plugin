@@ -7,12 +7,18 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.io.TempDir
 import top.wcpe.taboolib.ioc.gradle.analysis.BeanKind
+import top.wcpe.taboolib.ioc.gradle.analysis.BytecodeAnalysisIndex
 import top.wcpe.taboolib.ioc.gradle.analysis.BytecodeBeanIndexBuilder
+import top.wcpe.taboolib.ioc.gradle.analysis.DiagnosticSeverity
 import top.wcpe.taboolib.ioc.gradle.analysis.InjectionPointKind
+import top.wcpe.taboolib.ioc.gradle.analysis.StaticDiagnosisEngine
+import top.wcpe.taboolib.ioc.gradle.companionfixture.CompanionInjectionHolder
 
 class BytecodeBeanIndexBuilderUnitTest {
 
@@ -451,6 +457,135 @@ class BytecodeBeanIndexBuilderUnitTest {
             "匿名类（纯数字末段）必须被跳过，不得进入 classIndex",
         )
     }
+
+    @Test
+    @DisplayName("嵌套字段的初始化与手工赋值按真实源码排除")
+    fun filtersNestedInitializedAndManuallyAssignedFields() {
+        val index = nestedInjectionIndex()
+        val owners = setOf("Initialized${'$'}State", "Manual${'$'}State", "Deep${'$'}Middle${'$'}State")
+        assertFalse(index.missingInjectCandidateIndex.any { it.ownerClassName.removePrefix("fixture.nested.") in owners },
+            "已由业务初始化或手工装配的嵌套字段不应成为遗漏注入候选")
+        val diagnostics = StaticDiagnosisEngine.analyze(":fixture", index).diagnostics
+        assertFalse(diagnostics.any { it.ownerClassName.removePrefix("fixture.nested.") in owners },
+            "上述嵌套字段不应产生错误诊断")
+    }
+
+    @Test
+    @DisplayName("真正遗漏注入的嵌套与外层字段继续报错")
+    fun keepsMissingInjectionInNestedAndOuterScopes() {
+        val index = nestedInjectionIndex()
+        val diagnostics = StaticDiagnosisEngine.analyze(":fixture", index).diagnostics
+            .filter { it.rule == "missing-inject-annotation" }
+        assertEquals(setOf("fixture.nested.Missing${'$'}State", "fixture.nested.SameName"),
+            diagnostics.map { it.ownerClassName }.toSet(), "不能用别的所有者初值抑制真实遗漏")
+        assertTrue(diagnostics.all { it.severity == DiagnosticSeverity.ERROR }, "真实遗漏必须继续阻断构建")
+        assertTrue(diagnostics.all { it.sourcePath != null && it.sourceLine != null }, "诊断应包含实际源码位置")
+    }
+
+    @Test
+    @DisplayName("显式注入的嵌套字段仍作为真正注入点分析")
+    fun retainsExplicitInjectionInNestedClass() {
+        val index = nestedInjectionIndex()
+        val owner = "fixture.nested.Explicit${'$'}State"
+        val point = index.injectionPointIndex.single { it.ownerClassName == owner && it.declarationName == "service" }
+        assertEquals(InjectionPointKind.FIELD, point.kind, "显式字段注入类型必须保留")
+        assertNotNull(point.sourcePath, "嵌套注入点应能定位源码")
+        assertFalse(index.missingInjectCandidateIndex.any { it.ownerClassName == owner }, "显式注入不能被当作遗漏")
+        assertFalse(StaticDiagnosisEngine.analyze(":fixture", index).diagnostics.any { it.ownerClassName == owner },
+            "存在兼容组件时显式注入应通过")
+    }
+
+    @Test
+    @DisplayName("源文件缺失时不能无依据抑制嵌套遗漏注入")
+    fun keepsNestedMissingInjectionWithoutSourceInput() {
+        val index = nestedInjectionIndex(includeSources = false)
+        val diagnostics = StaticDiagnosisEngine.analyze(":fixture", index).diagnostics
+        assertTrue(diagnostics.any { it.ownerClassName == "fixture.nested.Missing${'$'}State" &&
+            it.rule == "missing-inject-annotation" && it.severity == DiagnosticSeverity.ERROR },
+            "缺少源码事实时仍须保留真实遗漏诊断")
+    }
+
+    @Test
+    @DisplayName("编译后的匿名类初值不能掩盖外层遗漏注入")
+    fun keepsOuterMissingInjectionBesideAnonymousClass() {
+        val source = """
+            class AnonymousOuter {
+                Runnable callback = new Runnable() {
+                    Service service = null;
+                    @Override public void run() {}
+                };
+                Service service;
+            }
+        """.trimIndent()
+        val index = nestedInjectionIndex(additionalSource = source)
+        assertTrue(index.missingInjectCandidateIndex.any { it.ownerClassName == "fixture.nested.AnonymousOuter" &&
+            it.declarationName == "service" }, "匿名类初值不能排除外层真实遗漏候选")
+        assertTrue(StaticDiagnosisEngine.analyze(":fixture", index).diagnostics.any {
+            it.ownerClassName == "fixture.nested.AnonymousOuter" && it.rule == "missing-inject-annotation" &&
+                it.severity == DiagnosticSeverity.ERROR }, "外层真实遗漏必须继续阻断构建")
+    }
+
+    @Test
+    @DisplayName("真实 Kotlin 伴生静态注入字段保持精确源码行号")
+    fun locatesActualKotlinCompanionBackingFieldDeclaration() {
+        val classes = Path.of(CompanionInjectionHolder::class.java.protectionDomain.codeSource.location.toURI())
+        val sources = Path.of("src/test/kotlin").toAbsolutePath()
+        val sourceFile = sources.resolve("top/wcpe/taboolib/ioc/gradle/companionfixture/CompanionInjectionFixtures.kt")
+        val expectedLine = Files.readAllLines(sourceFile).indexOfFirst { it.contains("var dep: String? = null") } + 1
+        val index = BytecodeBeanIndexBuilder.build(listOf(classes), listOf(sources))
+        val point = index.injectionPointIndex.single {
+            it.ownerClassName == CompanionInjectionHolder::class.java.name && it.declarationName == "dep"
+        }
+        assertEquals(expectedLine, point.sourceLine, "静态伴生字段必须定位到实际声明，不能退回宿主类行")
+        assertTrue(point.sourcePath?.endsWith("CompanionInjectionFixtures.kt") == true, "应定位到真实夹具源文件")
+    }
+
+    private fun nestedInjectionIndex(includeSources: Boolean = true, additionalSource: String = ""): BytecodeAnalysisIndex {
+        val root = tempDir.resolve("nested-injection")
+        val classes = compileJavaSources(root, mapOf(
+            "fixture/scan/annotations/Component.java" to simpleAnnotationSource("Component", "TYPE"),
+            "fixture/scan/annotations/Inject.java" to simpleAnnotationSource("Inject", "FIELD"),
+            "fixture/nested/NestedConsumers.java" to nestedConsumersSource() + "\n" + additionalSource,
+        ))
+        return BytecodeBeanIndexBuilder.build(listOf(classes), if (includeSources) listOf(root.resolve("src")) else emptyList())
+    }
+
+    private fun nestedConsumersSource(): String = """
+        package fixture.nested;
+        import fixture.scan.annotations.Component;
+        import fixture.scan.annotations.Inject;
+        @Component class Service {}
+    """.trimIndent() + "\n" + nestedInitializedConsumers() + "\n" + nestedMissingConsumers()
+
+    private fun nestedInitializedConsumers(): String = """
+        class Initialized {
+            static class State { Service service = null; }
+        }
+        class Manual {
+            static class State {
+                Service service;
+                void register() { service = new Service(); }
+            }
+        }
+        class Deep {
+            static class Middle {
+                static class State { Service service = null; }
+            }
+        }
+    """.trimIndent()
+
+    private fun nestedMissingConsumers(): String = """
+        class Missing {
+            static class State { Service service; }
+        }
+        class Explicit {
+            static class State { @Inject Service service; }
+        }
+        class SameName {
+            Service service;
+            static class State { Service service = null; }
+        }
+    """.trimIndent()
 
     private fun simpleAnnotationSource(name: String, targets: String): String {
         val targetList = targets.split(',')
