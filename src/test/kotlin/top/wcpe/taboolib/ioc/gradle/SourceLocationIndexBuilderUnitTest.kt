@@ -1164,4 +1164,27 @@ class SourceLocationIndexBuilderUnitTest {
             qualifierName = null,
             required = true,
         )
+    @Test
+    @DisplayName("匿名对象里的 this@Foo 赋值仍算作本类手工装配")
+    fun recognisesQualifiedThisAssignmentInsideAnonymousObject() {
+        // this@Foo 的识别此前只覆盖 lambda（lambda 不产作用域）。写在匿名对象里的同名写法会被
+        // 装配检测的行集整段抹掉，于是判不出手工装配、合法字段被误报缺失注入。
+        // 注意声明/初值检测**仍必须**抹掉匿名对象：它自己声明的 val 属于它自己，不抹会被算到外层
+        // 同名字段头上、静默抑制真实漏报（这条已有独立测试守着）。两处要求相反，故拆成两套行集。
+        val source = """
+            class Foo {
+                lateinit var service: Service
+                val runner = object : Runnable {
+                    override fun run() { this@Foo.service = Service() }
+                }
+            }
+            class Service
+        """.trimIndent()
+        nestedSource(source)
+        assertTrue(
+            nestedField("Foo").hasManualAssignment,
+            "匿名对象里的 this@Foo.service 是对 Foo 字段的装配，不得因匿名作用域被抹掉而漏判",
+        )
+    }
+
 }

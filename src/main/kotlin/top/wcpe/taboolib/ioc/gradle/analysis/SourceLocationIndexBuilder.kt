@@ -64,15 +64,27 @@ internal object SourceLocationIndexBuilder {
         return scopes.mapNotNull { scope ->
             val name = scope.className ?: return@mapNotNull null
             SourceClassEntry(name, scope.simpleName, sourceRoot.relativize(file.toAbsolutePath().normalize()),
-                ownedLines(source, scope, scopes), lineAt(source, scope.start), lineAt(source, scope.end), scope.isCompanion)
+                ownedLines(source, scope, scopes),
+                ownedLines(source, scope, scopes, maskAnonymousScopes = false),
+                lineAt(source, scope.start), lineAt(source, scope.end), scope.isCompanion)
         }
     }
 
-    private fun ownedLines(source: String, owner: SourceTypeScope, scopes: List<SourceTypeScope>): List<String> {
+    private fun ownedLines(
+        source: String,
+        owner: SourceTypeScope,
+        scopes: List<SourceTypeScope>,
+        maskAnonymousScopes: Boolean = true,
+    ): List<String> {
         val characters = source.toCharArray()
         maskRange(characters, 0 until owner.start)
         maskRange(characters, owner.end + 1 until characters.size)
-        scopes.filter { owner.contains(it) }.forEach { maskRange(characters, it.start..it.end) }
+        // maskAnonymousScopes=false 时保留匿名对象：它内部的 this@Foo.svc = ... 仍是对外层
+        // 字段的装配，抹掉会让手工装配判据失效、合法字段被误报。而声明/初值检测必须抹掉它 ——
+        // 它自己声明的 val svc 属于它自己，不抹会被算到外层同名字段头上、静默抑制真实漏报。
+        // 两处要求相反，因此同一个类必须产出两份行集。
+        scopes.filter { owner.contains(it) && (maskAnonymousScopes || it.className != null) }
+            .forEach { maskRange(characters, it.start..it.end) }
         return String(characters).split('\n')
     }
 
@@ -473,12 +485,17 @@ internal data class SourceClassEntry(
     val simpleName: String,
     val filePath: Path,
     val lines: List<String>,
+    /** 同源但保留匿名对象的行集，专供手工装配检测。 */
+    val assignmentLines: List<String> = lines,
     val startLine: Int,
     val endLine: Int,
     val isCompanionObject: Boolean = false,
 ) {
 
     private val maskedLines: List<String> by lazy { maskNonCodeSegments(lines) }
+
+    /** 手工装配检测专用：保留匿名对象的那份，否则匿名对象内的 this@Foo 赋值看不见。 */
+    private val assignmentMaskedLines: List<String> by lazy { maskNonCodeSegments(assignmentLines) }
 
     /**
      * 按「用途 + 名字」缓存带变量的正则。
@@ -579,7 +596,7 @@ internal data class SourceClassEntry(
         if (declarationEndLine >= endLine) {
             return false
         }
-        val codeAfterDeclaration = maskedLines.subList(declarationEndLine, endLine).joinToString("\n")
+        val codeAfterDeclaration = assignmentMaskedLines.subList(declarationEndLine, endLine).joinToString("\n")
         // 只认「成员位置」的赋值，否则同名局部变量/其它对象的同名属性会把真实缺失注入
         // 静默抑制掉（漏报，正是本文件要消灭的方向）：
         //  - 左边界不允许 `.`：排除 `other.field = ...`；`this.field = ...` 单列一条分支
