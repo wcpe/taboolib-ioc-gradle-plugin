@@ -1625,7 +1625,10 @@ internal object StaticDiagnosisEngine {
                 if (inherited != null) {
                     "切点命中的方法 ${inherited.first} 声明在父类 ${inherited.second} 而未在 $className 中声明/覆写；" +
                         "引擎只按被织类【自身声明】的方法名匹配，故不会织入。" +
-                        "$className 中覆写它，或把切点类模式改为声明它的类 ${inherited.second}。"
+                        "在 $className 中覆写它即可被织入。" +
+                        "注意：把切点类模式改成 ${inherited.second} 并不能消除本条告警 —— 父类被织入的" +
+                        "转发体仍会被 $className 的实例分派到，而是否命中通知取决于运行期匹配口径，" +
+                        "构建期无法判定，因此这里按保守方向保留提示。"
                 } else {
                     "命中的方法不具备织入资格（须为 public 且非 static/abstract/native/合成/桥接，且位于本模块编译产物内）。"
                 }
