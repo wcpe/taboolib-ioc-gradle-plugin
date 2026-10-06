@@ -20,7 +20,7 @@ pluginManagement {
     }
 
     plugins {
-        id("top.wcpe.taboolib.ioc") version "0.0.11"
+        id("top.wcpe.taboolib.ioc") version "0.1.0"
     }
 }
 
