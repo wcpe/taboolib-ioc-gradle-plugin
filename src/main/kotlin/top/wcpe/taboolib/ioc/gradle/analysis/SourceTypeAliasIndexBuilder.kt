@@ -23,7 +23,9 @@ internal object SourceTypeAliasIndexBuilder {
     }
 
     private fun scanFile(file: Path): List<TypeAliasDefinition> {
-        val content = Files.readString(file)
+        // 与 SourceLocationIndexBuilder 共用宽容解码：非 UTF-8 的历史源码不得让整个分析任务失败，
+        // 真正的读取失败也会带上文件路径。
+        val content = readSourceText(file)
         val packageName = packageRegex.find(content)?.groupValues?.getOrNull(1).orEmpty()
         return typeAliasRegex.findAll(content).map { match ->
             TypeAliasDefinition(

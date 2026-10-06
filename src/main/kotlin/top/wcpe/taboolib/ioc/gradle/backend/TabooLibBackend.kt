@@ -153,7 +153,7 @@ internal object TabooLibBackend : PackagingBackend {
 
             is ProjectDependencySpec -> configuration.dependencies
                 .filterIsInstance<ProjectDependency>()
-                .any { it.dependencyProject.path == dependencySpec.path }
+                .any { ReflectionSupport.projectDependencyPath(it) == dependencySpec.path }
         }
     }
 
@@ -175,12 +175,15 @@ internal object TabooLibBackend : PackagingBackend {
         configuration: org.gradle.api.artifacts.Configuration,
         dependencySpec: ProjectDependencySpec,
     ) {
+        // 路径读取统一走 ReflectionSupport：Gradle 8.9 只提供 dependencyProject，9.x 只提供 path，
+        // 编译期直连任一 getter 都会在另一版本上抛 NoSuchMethodError。
         val conflict = configuration.dependencies.filterIsInstance<ProjectDependency>().firstOrNull {
-            it.dependencyProject.path != dependencySpec.path
+            ReflectionSupport.projectDependencyPath(it) != dependencySpec.path
         }
         if (conflict != null) {
             throw TaboolibIocConfigurationException(
-                "检测到多个 IoC project 依赖来源：已存在 ${conflict.dependencyProject.path}，自动接管想要注入 ${dependencySpec.path}。请保留一个本地联调项目。",
+                "检测到多个 IoC project 依赖来源：已存在 ${ReflectionSupport.projectDependencyPath(conflict)}，" +
+                    "自动接管想要注入 ${dependencySpec.path}。请保留一个本地联调项目。",
             )
         }
     }

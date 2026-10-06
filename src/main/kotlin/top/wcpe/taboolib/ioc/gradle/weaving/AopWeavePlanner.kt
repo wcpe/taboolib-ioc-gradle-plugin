@@ -23,7 +23,8 @@ internal data class ResolvedAdvice(
     fun matches(className: String, methodName: String): Boolean =
         matchesClass(className) && matchesMethod(methodName)
 
-    private fun matchesClass(className: String): Boolean {
+    /** 仅按**类模式**匹配（供织入计划判定「该类是否与任一通知相关」）。 */
+    internal fun matchesClass(className: String): Boolean {
         if (classPattern == "*") return true
         if (classPattern.endsWith("..*")) {
             return className.startsWith(classPattern.dropLast(3))

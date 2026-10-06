@@ -25,6 +25,7 @@ internal data class FixtureOptions(
     val autoTakeover: Boolean = true,
     val localProjectPath: String? = ":ioc-lib",
     val taboolibSubproject: Boolean = false,
+    val weaving: Boolean = false,
 )
 
 internal class FunctionalTestProject(private val rootDir: Path) {
@@ -99,6 +100,79 @@ internal class FunctionalTestProject(private val rootDir: Path) {
         )
         if (options.includeStaticDiagnosisSamples) {
             StaticDiagnosisFixtureSources.writeJavaSources(rootDir.resolve("consumer/src/main/java"))
+        }
+        if (options.weaving) {
+            writeWeavingSamples()
+        }
+    }
+
+    /**
+     * 开启织入时给消费方塞一组最小切面样本：`@Aspect` 注解按**简单名**判定（织入器与诊断侧
+     * 都是如此），因此消费方自己声明同名的注解即可，不需要依赖插件自身的注解类。
+     */
+    private fun writeWeavingSamples() {
+        val base = "consumer/src/main/java/fixture/consumer"
+        writeFile(rootDir.resolve("$base/Aspect.java"), javaAnnotation("Aspect", "ElementType.TYPE"))
+        writeFile(rootDir.resolve("$base/Before.java"), javaValueAnnotation("Before", "ElementType.METHOD"))
+        writeFile(
+            rootDir.resolve("$base/WovenService.java"),
+            javaSource("fixture.consumer", "WovenService", "public String run() { return \"ok\"; }"),
+        )
+        writeFile(
+            rootDir.resolve("$base/WovenServiceAspect.java"),
+            """
+            package fixture.consumer;
+
+            @Aspect
+            public class WovenServiceAspect {
+                @Before("execution(fixture.consumer.WovenService.run)")
+                public void beforeRun() {
+                }
+            }
+            """,
+        )
+    }
+
+    private fun javaAnnotation(name: String, target: String): String =
+        """
+        package fixture.consumer;
+
+        import java.lang.annotation.ElementType;
+        import java.lang.annotation.Retention;
+        import java.lang.annotation.RetentionPolicy;
+        import java.lang.annotation.Target;
+
+        @Retention(RetentionPolicy.RUNTIME)
+        @Target($target)
+        public @interface $name {
+        }
+        """
+
+    private fun javaValueAnnotation(name: String, target: String): String =
+        """
+        package fixture.consumer;
+
+        import java.lang.annotation.ElementType;
+        import java.lang.annotation.Retention;
+        import java.lang.annotation.RetentionPolicy;
+        import java.lang.annotation.Target;
+
+        @Retention(RetentionPolicy.RUNTIME)
+        @Target($target)
+        public @interface $name {
+            String value();
+        }
+        """
+
+    /** 读消费方 jar 里的 class 字节做子串判定：织入标记与合成方法名都只存在于常量池，不在条目名里。 */
+    fun consumerJarClassBytesContain(fragment: String): Boolean {
+        val jarFile = rootDir.resolve("consumer/build/libs").listDirectoryEntries("*.jar").single()
+        JarFile(jarFile.toFile()).use { jar ->
+            return jar.entries().asSequence()
+                .filter { !it.isDirectory && it.name.endsWith(".class") }
+                .any { entry ->
+                    jar.getInputStream(entry).use { it.readBytes().decodeToString() }.contains(fragment)
+                }
         }
     }
 
@@ -212,6 +286,9 @@ internal class FunctionalTestProject(private val rootDir: Path) {
             }
             if (options.localProjectPath != null && options.includeIocLibrary) {
                 appendLine("    useLocalProject '${options.localProjectPath}'")
+            }
+            if (options.weaving) {
+                appendLine("    weaving(true)")
             }
             appendLine("}")
         }

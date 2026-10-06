@@ -1,5 +1,12 @@
 package top.wcpe.taboolib.ioc.gradle.analysis
 
+import java.lang.reflect.MalformedParameterizedTypeException
+import top.wcpe.taboolib.ioc.gradle.weaving.ClassWeaveDecision
+import top.wcpe.taboolib.ioc.gradle.weaving.WEAVING_MARKER_INTERFACES
+import top.wcpe.taboolib.ioc.gradle.weaving.WeaveOutcome
+import top.wcpe.taboolib.ioc.gradle.weaving.WeavePlan
+import top.wcpe.taboolib.ioc.gradle.weaving.WeaveSkipReason
+
 internal object StaticDiagnosisEngine {
 
     fun analyze(
@@ -8,6 +15,21 @@ internal object StaticDiagnosisEngine {
         typeAliases: List<TypeAliasDefinition> = emptyList(),
         projectProperties: Map<String, String> = emptyMap(),
         scanClassLoader: ClassLoader? = null,
+        /**
+         * 是否开启编译期 AOP 织入（`taboolibIoc { weaving }`）。
+         *
+         * 织入开启后，无接口的具体类也能被切面命中（`AopWeaver` 直接改写方法体），
+         * 因此 AOP 静默失效规则组需要据此条件化，否则会对已开织入的用户产生误报。
+         * 默认 false，保持既有构建行为不变。
+         */
+        weaving: Boolean = false,
+        /**
+         * 引擎自报的**织入计划**（事实），来自 `aop-weave-plan.json`。
+         *
+         * 抑制**只依据它**：`null`（缺失/解析失败/schema 不符）或 `weaving=false` → 保守不抑制
+         * （与今天逐字一致），**绝不退回「预测引擎是否会织入」**（见 §2.3.4 / §2.3.6）。
+         */
+        weavePlan: WeavePlan? = null,
     ): StaticAnalysisReport {
         val hierarchy = TypeHierarchy(index.classIndex, scanClassLoader, typeAliases)
         val beanConditionStates = index.beanIndex.associateWith { bean ->
@@ -29,7 +51,7 @@ internal object StaticDiagnosisEngine {
             analyzeValueFields(index.valueFieldIndex) +
             analyzeAspects(index.aspectIndex) +
             analyzeDuplicateBeanNames(index.beanIndex) +
-            analyzeAopSilentFailures(index.beanIndex, index.aspectIndex, classEntryByClassName)
+            analyzeAopSilentFailures(index.beanIndex, index.aspectIndex, classEntryByClassName, weaving, weavePlan)
             ).sortedWith(compareBy({ it.severity.name }, { it.ownerClassName }, { it.declarationName }, { it.rule }))
 
         return StaticAnalysisReport(
@@ -39,6 +61,9 @@ internal object StaticDiagnosisEngine {
             componentScans = index.componentScans,
             typeAliasIndex = typeAliases,
             diagnostics = diagnostics,
+            // 把抑制与降级一并带进报告：否则「结论为什么变了」在报告里无从追溯。
+            sourceIndexDegradations = index.sourceIndexDegradations,
+            suppressedMissingInjections = index.suppressedMissingInjections,
         )
     }
 
@@ -52,6 +77,15 @@ internal object StaticDiagnosisEngine {
         val assignableCandidates = beans.filter {
             hierarchy.isAssignable(it.exposedType, injectionPoint.dependencyType) && hierarchy.isGenericMatch(it, injectionPoint)
         }
+        // 仅类型可赋值、但泛型实参不匹配的候选。单独算一份是为了在报 missing-bean 时能说清
+        // 「是泛型实参对不上」还是「压根没有候选」—— 两者的排查方向完全不同。
+        val genericRejectedCandidates = applyComponentScan(
+            beans.filter {
+                hierarchy.isAssignable(it.exposedType, injectionPoint.dependencyType) &&
+                    !hierarchy.isGenericMatch(it, injectionPoint)
+            },
+            componentScans,
+        ).filter { beanConditionStates[it] == ConditionEvaluationState.ENABLED }
         val inScanCandidates = applyComponentScan(assignableCandidates, componentScans)
         val activeCandidates = inScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.ENABLED }
         val unknownConditionCandidates = inScanCandidates.filter { beanConditionStates[it] == ConditionEvaluationState.UNKNOWN }
@@ -172,12 +206,30 @@ internal object StaticDiagnosisEngine {
                 )
 
                 else -> listOf(
-                    diagnostic(
-                        severity = DiagnosticSeverity.ERROR,
-                        rule = "missing-bean",
-                        injectionPoint = injectionPoint,
-                        message = "缺少可满足依赖 ${injectionPoint.dependencyType} 的 Bean。",
-                    ),
+                    // 严重度刻意保持 ERROR，与 README 的「严重度对齐运行时行为」原则并不冲突：
+                    // 运行期按**擦除**类型匹配、不读泛型（已核实 taboolib-ioc 全仓无泛型反射 API），
+                    // 所以注入这一步确实会成功 —— 但注入进来的 Bean 与声明的类型实参不自洽，
+                    // 任何依赖类型实参的使用点都会被编译器插入 checkcast，运行期抛 ClassCastException。
+                    // 这属于「运行时失败」，不是「运行时静默降级」，因此不该降为 WARNING。
+                    // 消息里必须写明这一点，否则用户看到「运行期能注入」会误以为可以忽略。
+                    if (genericRejectedCandidates.isNotEmpty()) {
+                        diagnostic(
+                            severity = DiagnosticSeverity.ERROR,
+                            rule = "missing-bean",
+                            injectionPoint = injectionPoint,
+                            message = "依赖 ${injectionPoint.dependencyType} 的类型实参与候选 Bean 的泛型实参不一致：" +
+                                "运行期按擦除类型注入、注入本身会成功，但依赖类型实参的使用点会抛 ClassCastException。" +
+                                "请核对注入点声明的类型实参与实际注册的 Bean。",
+                            candidateBeans = genericRejectedCandidates.map { it.beanName },
+                        )
+                    } else {
+                        diagnostic(
+                            severity = DiagnosticSeverity.ERROR,
+                            rule = "missing-bean",
+                            injectionPoint = injectionPoint,
+                            message = "缺少可满足依赖 ${injectionPoint.dependencyType} 的 Bean。",
+                        )
+                    },
                 )
             }
         }
@@ -411,37 +463,47 @@ internal object StaticDiagnosisEngine {
             entry.className to entry.genericSuperTypes.map { normalizeTypeName(it) }
         }
 
-                /** A（性能）：按需补齐泛型父类型时的缓存，避免同一类型重复反射。 */
-                private val lazyGenericSuperTypes = HashMap<String, List<String>>()
+        /** A（性能）：按需补齐泛型父类型时的缓存，避免同一类型重复反射。 */
+        private val lazyGenericSuperTypes = HashMap<String, List<String>>()
 
-                /**
-                 * 取某类型的泛型父类/接口清单。
-                 *
-                 * 采集阶段只为 Bean 暴露类型预解析（见 BytecodeBeanIndexBuilder.enrichGenericMetadata），
-                 * 避免为上万个与 IoC 无关的依赖类付反射加载成本；其余类型若被后续规则查询到，
-                 * 这里用扫描类加载器按需补齐并缓存，结果与全量预解析一致。
-                 */
-                private fun genericSuperTypesOf(typeName: String): List<String> {
-                    genericSuperTypeIndex[typeName]?.takeIf { it.isNotEmpty() }?.let { return it }
-                    val canonicalName = canonical(typeName)
-                    genericSuperTypeIndex[canonicalName]?.takeIf { it.isNotEmpty() }?.let { return it }
-                    return lazyGenericSuperTypes.getOrPut(canonicalName) { resolveGenericSuperTypes(canonicalName) }
-                }
+        /**
+         * 取某类型的泛型父类/接口清单。
+         *
+         * 采集阶段只为 Bean 暴露类型预解析（见 BytecodeBeanIndexBuilder.enrichGenericMetadata），
+         * 避免为上万个与 IoC 无关的依赖类付反射加载成本；其余类型若被后续规则查询到，
+         * 这里用扫描类加载器按需补齐并缓存，结果与全量预解析一致。
+         */
+        private fun genericSuperTypesOf(typeName: String): List<String> {
+            genericSuperTypeIndex[typeName]?.takeIf { it.isNotEmpty() }?.let { return it }
+            val canonicalName = canonical(typeName)
+            genericSuperTypeIndex[canonicalName]?.takeIf { it.isNotEmpty() }?.let { return it }
+            return lazyGenericSuperTypes.getOrPut(canonicalName) { resolveGenericSuperTypes(canonicalName) }
+        }
 
-                private fun resolveGenericSuperTypes(className: String): List<String> {
-                    val classLoader = scanClassLoader ?: return emptyList()
-                    val clazz = try {
-                        Class.forName(className, false, classLoader)
-                    } catch (_: Throwable) {
-                        return emptyList()
-                    }
-                    return buildList {
-                        clazz.genericSuperclass?.typeName
-                            ?.takeUnless { it == "java.lang.Object" }
-                            ?.let { add(normalizeTypeName(it)) }
-                        clazz.genericInterfaces.map { normalizeTypeName(it.typeName) }.forEach(::add)
-                    }.distinct().sorted()
-                }
+        private fun resolveGenericSuperTypes(className: String): List<String> {
+            val classLoader = scanClassLoader ?: return emptyList()
+            val clazz = try {
+                Class.forName(className, false, classLoader)
+            } catch (_: Throwable) {
+                return emptyList()
+            }
+            // 泛型签名是惰性解析的：clazz.genericSuperclass / genericInterfaces 会在签名损坏时抛
+            // GenericSignatureFormatError（LinkageError）/ MalformedParameterizedTypeException /
+            // TypeNotPresentException。此前这两处裸露在 try 之外，异常会一路冒泡到 analyze 打断
+            // 整个诊断任务；这里与采集侧 BytecodeBeanIndexBuilder.safelyResolveMetadata 对齐，
+            // 失败时降级为「泛型父类型未知」，而不是让整个任务崩掉。
+            return try {
+                // 走与采集侧**同一个**传递闭包实现：两处各写一份「只取直接父类型」的版本，
+                // 会让二层以上的参数化层级在字节码路径与反射回退路径上给出不同结论。
+                BytecodeBeanIndexBuilder.collectGenericSuperTypes(clazz)
+            } catch (_: LinkageError) {
+                emptyList()
+            } catch (_: TypeNotPresentException) {
+                emptyList()
+            } catch (_: MalformedParameterizedTypeException) {
+                emptyList()
+            }
+        }
 
         /**
          * B-P1-04：typealias 归一化映射（aliasFqcn -> targetFqcn）。
@@ -524,6 +586,7 @@ internal object StaticDiagnosisEngine {
 
         fun isGenericMatch(bean: BeanDefinition, injectionPoint: InjectionPointDefinition): Boolean {
             val dependencyGenericType = injectionPoint.dependencyGenericType?.let { normalizeTypeName(it) } ?: return true
+            if (!hasConcreteTypeArgument(dependencyGenericType)) return true
             val resolvedDependencyGenericType = canonicalGeneric(dependencyGenericType)
             val candidateGenericTypes = buildList {
                 bean.exposedGenericType?.let { add(normalizeTypeName(it)) }
@@ -535,7 +598,39 @@ internal object StaticDiagnosisEngine {
             return candidateGenericTypes.any { it == dependencyGenericType || canonicalGeneric(it) == resolvedDependencyGenericType }
         }
 
-        /** 对泛型实参逐个归一化：`java.util.List<MyAlias>` -> `java.util.List<fixture.ServerApi>` */
+        /**
+         * 依赖侧是否带有「具体类型实参」。
+         *
+         * 运行期 taboolib-ioc 只用擦除类型做 `Class.isAssignableFrom`，完全不读泛型信息
+         * （已反编译发布制品确认 `getGenericType` / `getActualTypeArguments` 全仓零命中），
+         * 因此 `Port`、`Port<?>`（Kotlin 星投影 `Port<*>` 经反射即为 `?`）这类**没有指定实参**
+         * 的声明必须与裸类型同等放行；否则它们会与候选的 `Port<String>` 判不等而误报
+         * missing-bean（ERROR，默认阻断构建）。
+         *
+         * 注意 `Port<? extends CharSequence>` 这类**带上界**的通配符不属于「无具体实参」：
+         * 它携带了必须参与比较的边界信息（见 canonicalGenericArgument）。
+         */
+        private fun hasConcreteTypeArgument(genericType: String): Boolean {
+            // 数组依赖（`Port<String>[]`）先剥掉数组维度，再判断其元素类型是否带具体实参
+            var elementType = genericType
+            while (elementType.endsWith("[]")) {
+                elementType = elementType.removeSuffix("[]").trim()
+            }
+            val open = elementType.indexOf('<')
+            if (open < 0 || !elementType.endsWith(">")) {
+                return false
+            }
+            val args = splitTopLevel(elementType.substring(open + 1, elementType.length - 1))
+            return args.any { it != "?" }
+        }
+
+        /**
+         * 归一化泛型类型串：`java.util.List<MyAlias>` -> `java.util.List<fixture.ServerApi>`。
+         *
+         * 实参归一化必须**递归**。此前对嵌套实参只调 canonical() 抹平类型参数，
+         * 于是 `Map<String, Port<Integer>>` 与 `Map<String, Port<String>>` 被判相等（漏报），
+         * 而同层的 `Port<Long>` 与 `Port<String>` 却报 ERROR（口径矛盾）。
+         */
         private fun canonicalGeneric(typeName: String): String {
             val compact = normalizeTypeName(typeName)
             val open = compact.indexOf('<')
@@ -544,8 +639,35 @@ internal object StaticDiagnosisEngine {
             }
             val raw = compact.substring(0, open)
             val args = compact.substring(open + 1, compact.length - 1)
-            val normalizedArgs = splitTopLevel(args).joinToString(",") { canonical(it) }
+            val normalizedArgs = splitTopLevel(args).joinToString(",") { canonicalGenericArgument(it) }
             return "${canonical(raw)}<$normalizedArgs>"
+        }
+
+        /**
+         * 归一化单个类型实参：
+         * - `?`（未指定通配符 / Kotlin 星投影）保留为 `?`，其放行由 hasConcreteTypeArgument 统一裁决；
+         * - `? extends X` / `? super X` 按采集侧 BytecodeBeanIndexBuilder.normalizeTypeName 的口径
+         *   退化为边界类型 X，使手工构造的源码串与反射富化产物（`Port<CharSequence>`）比较口径一致；
+         * - 其余实参递归归一化，保留嵌套结构，让嵌套实参也参与比较。
+         */
+        private fun canonicalGenericArgument(argument: String): String {
+            val compact = normalizeTypeName(argument)
+            if (compact == "?") {
+                return "?"
+            }
+            wildcardBound(compact)?.let { bound ->
+                return if (bound.isEmpty()) "?" else canonicalGeneric(bound)
+            }
+            return canonicalGeneric(compact)
+        }
+
+        /** 取通配符 `? extends X` / `? super X` 的边界类型；非通配符返回 null，无边界通配符返回空串 */
+        private fun wildcardBound(argument: String): String? {
+            return when {
+                argument.startsWith("?extends") -> argument.removePrefix("?extends").trim()
+                argument.startsWith("?super") -> argument.removePrefix("?super").trim()
+                else -> null
+            }
         }
 
         private fun splitTopLevel(args: String): List<String> {
@@ -687,7 +809,7 @@ internal object StaticDiagnosisEngine {
         // K6 修复：把 classIndex 传入环检测器，使「依赖目标类型是否接口」可被静态精确判定，
         // 从而只对「接口类型 @Lazy」边断环（与运行时 LazyProxyFactory.canProxy(type) = type.isInterface 同源）。
         val cycles = CycleDependencyDetector.detectCycles(beans, injectionPoints, classIndex)
-        return cycles.map { cycle ->
+        return cycles.mapNotNull { cycle ->
             // resolvable=true 表示「运行时可由早期暴露解析」，或「环已被接口类型 @Lazy 代理断开」。
             // 两者运行时都不会失败，故静态降级为 WARNING（不触发 failOnError 阻断正确工程）。
             val severity = when {
@@ -705,7 +827,9 @@ internal object StaticDiagnosisEngine {
                     "检测到跨作用域循环依赖，无法解析: ${cycle.path.joinToString(" -> ")}"
             }
 
-            val firstBean = beans.find { it.beanName == cycle.path.first() }!!
+            // 环路径首节点理论上一定能对应到 Bean（路径由 Bean 名构成），但契约一旦变化，
+            // 这里的 `!!` 会以 NPE 打断整个诊断任务；改为找不到就跳过这一条环诊断。
+            val firstBean = beans.firstOrNull { it.beanName == cycle.path.first() } ?: return@mapNotNull null
             diagnostic(
                 severity = severity,
                 rule = "circular-dependency-detected",
@@ -1030,11 +1154,23 @@ internal object StaticDiagnosisEngine {
      * P1 AOP 规则组（对应缺口分析报告 E 组）。
      * 运行时 AopProxyFactory 只建 JDK 动态代理：无接口目标仅打 warning 后返回原实例，
      * 通知**永不执行**且不报错 —— 本组规则把这类静默失效提前到构建期。
+     *
+     * @param weaving 编译期 AOP 织入是否开启：
+     *  - `aop-target-not-proxied` 的抑制**只依据 [weavePlan]（事实）**：`weaving=false` 或
+     *    无计划 → 保守不抑制（与今天逐字一致）；`weaving=true` 且有计划 → 按 **ALL** 语义
+     *    （命中的通知**全部**在计划中才抑制，否则报出未生效者）。**不做任何预测**。
+     *  - `aop-factory-bean-interface-return` 降级为 INFO（保留提示，不阻断）；
+     *  - **`aop-private/static-method-pointcut` 不随 `weaving` 变化**：`WeavingEligibility`
+     *    显式要求 ACC_PUBLIC 且排除 ACC_STATIC，private/static 方法在织入下依然不可被命中，
+     *    必须继续上报（否则「开了织入反而漏报死规则」）。
+     * @param weavePlan 引擎自报的织入计划；`null` = 无计划（缺失/解析失败）→ 保守不抑制。
      */
     private fun analyzeAopSilentFailures(
         beans: List<BeanDefinition>,
         aspects: List<AspectDefinition>,
         classEntryByClassName: Map<String, ClassIndexEntry>,
+        weaving: Boolean = false,
+        weavePlan: WeavePlan? = null,
     ): List<StaticDiagnostic> {
         if (aspects.isEmpty()) {
             return emptyList()
@@ -1161,6 +1297,15 @@ internal object StaticDiagnosisEngine {
         }
 
         // ── aop-target-not-proxied / aop-factory-bean-interface-return
+        //
+        // 抑制来源 = **引擎自报的织入计划（事实）**，诊断侧**不做任何预测**（§2.3 / §7）。
+        //  · `weaving=false` 或「无计划」（缺失 / 解析失败 / schema 不符）→ 保守不抑制，输出与 HEAD 逐字一致；
+        //  · `weaving=true` 且有计划 → **ALL 语义**：命中的通知**全部**出现在计划的 `WOVEN` 条目中才抑制，
+        //    否则只报出真正未生效者（`candidateBeans = unrealized`），并把原因精确到 @NoAspect / 继承未覆写 / 无织入资格。
+        val planIndex: Map<String, ClassWeaveDecision> =
+            if (weaving) weavePlan?.classes?.associateBy { it.className }.orEmpty() else emptyMap()
+        val planAvailable = weaving && weavePlan != null
+
         beans.forEach { bean ->
             if (bean.ownerClassName in aspectClassNames) {
                 return@forEach // 切面 Bean 自身不被代理
@@ -1172,32 +1317,113 @@ internal object StaticDiagnosisEngine {
             when (bean.kind) {
                 BeanKind.CLASS -> {
                     if (collectExposedInterfaces(bean, classEntryByClassName).isEmpty()) {
-                        diagnostics += diagnostic(
-                            severity = DiagnosticSeverity.WARNING,
-                            rule = "aop-target-not-proxied",
-                            ownerClassName = bean.ownerClassName,
-                            declarationName = bean.declarationName,
-                            sourceFile = bean.sourceFile,
-                            message = "有 ${matched.size} 个切面通知命中 Bean ${bean.exposedType}，" +
+                        if (!planAvailable) {
+                            // weaving=false 或「无计划」（缺失 / 解析失败 / schema 不符）：保守不抑制。
+                            // **基线 message 与 HEAD 逐字一致**，`weaving=false` 一个字符都不加；
+                            // **仅当 `weaving=true`**（即「已开启织入却未产出可用计划」这一**异常**）时，
+                            // 在基线后追加独立后缀，提示这是织入链路未跑通而非用户切点写法问题（§2.3.4 修正口径）。
+                            val baselineMessage = "有 ${matched.size} 个切面通知命中 Bean ${bean.exposedType}，" +
                                 "但该类没有实现任何接口，运行时 JDK 动态代理将跳过包装，通知永不执行。" +
-                                "请为其抽取接口，或调整切点表达式。",
-                            candidateBeans = matched.map { "${it.aspectClassName}#${it.advice.methodName}" },
-                        )
+                                "请为其抽取接口，或调整切点表达式。"
+                            val message = if (weaving) {
+                                baselineMessage + WEAVE_PLAN_MISSING_SUFFIX
+                            } else {
+                                baselineMessage
+                            }
+                            diagnostics += diagnostic(
+                                severity = DiagnosticSeverity.WARNING,
+                                rule = "aop-target-not-proxied",
+                                ownerClassName = bean.ownerClassName,
+                                declarationName = bean.declarationName,
+                                sourceFile = bean.sourceFile,
+                                message = message,
+                                candidateBeans = matched.map { "${it.aspectClassName}#${it.advice.methodName}" },
+                            )
+                        } else {
+                            val planEntry = planIndex[bean.exposedType]
+                            // 残渣态（`WOVEN` + `alreadyWoven=true`）：计划只能扫 `*$ioc$original` 合成方法，
+                            // 重匹配可能为空并落入哨兵，因此**不能**直接读 `matchedAdvices`（会欠计 → 假阳性）。
+                            // 但同样**不能**把该 bean 命中的通知一律当成已实现：方法级 `@NoAspect`、父类声明
+                            // 子类未覆写这类「永远不会被织入」的方法所命中的通知会被一起压掉，而它们的可见性
+                            // 还会随构建历史漂移（源码未改，第一次构建报、第二次构建不报）——那等于把本类
+                            // 「读计划事实、结论可复现」的立论推翻。
+                            // 正解：按计划里**真实被转发的方法名**求交，只有命中这些方法的通知才算已实现。
+                            val realized: Set<String> = when {
+                                planEntry == null -> emptySet()
+                                planEntry.outcome == WeaveOutcome.WOVEN && planEntry.alreadyWoven -> {
+                                    // 计划只能报出「确实被转发过的方法名」，求交只认这些名字：
+                                    // - 不允许 `*` 通配短路。forwarded 为空即哨兵态（计划无法确定织入了哪些
+                                    //   方法），此时任何通知都**无法证明**已实现，必须保守上报；旧写法在这里
+                                    //   无条件放行 `*`，把「无法确定」退化成「整类抑制」，正好与上面的取舍相反。
+                                    // - 不再并上计划的 matchedAdvices。那是第二套匹配权威：它由计划侧用同一
+                                    //   matcher 重匹配得到，键集与左侧过滤器恒等，当前是死代码；一旦 matcher
+                                    //   将来扩展（前缀通配等），两边会静默分叉成过度抑制通道且没有测试会变红。
+                                    val forwarded = planEntry.wovenMethods.map { it.methodName }.toSet()
+                                    if (forwarded.isEmpty()) {
+                                        emptySet()
+                                    } else {
+                                        // `*` 同样不能放行：它匹配该类的**每一个**方法，而计划只转发了
+                                        // 其中一部分（forwarded 是残渣里真实存在的合成方法名）。只要有一个
+                                        // 被 `*` 命中的方法没被转发，这条通知就没有被完整实现 —— 例如新增的
+                                        // execution 全通配切点会命中 load()，而残渣里从未转发过它。
+                                        // 按保守方向（宁可多报）：`*` 一律不计入已实现。
+                                        matched.filter { it.methodPattern != "*" && it.methodPattern in forwarded }
+                                            .map { "${it.aspectClassName}#${it.advice.methodName}" }
+                                            .toSet()
+                                    }
+                                }
+
+                                else -> planEntry.wovenMethods.flatMap { it.matchedAdvices }.toSet()
+                            }
+                            // ALL 语义：只要有任一条命中通知未被织入，就报告那条通知。
+                            val unrealized = matched.filter { advice ->
+                                "${advice.aspectClassName}#${advice.advice.methodName}" !in realized
+                            }
+                            if (unrealized.isNotEmpty()) {
+                                val unrealizedKeys = unrealized
+                                    .map { "${it.aspectClassName}#${it.advice.methodName}" }
+                                    .sorted()
+                                diagnostics += diagnostic(
+                                    severity = DiagnosticSeverity.WARNING,
+                                    rule = "aop-target-not-proxied",
+                                    ownerClassName = bean.ownerClassName,
+                                    declarationName = bean.declarationName,
+                                    sourceFile = bean.sourceFile,
+                                    message = buildUnrealizedMessage(
+                                        bean = bean,
+                                        totalMatched = matched.size,
+                                        unrealizedKeys = unrealizedKeys,
+                                        unrealizedAdvices = unrealized,
+                                        planEntry = planEntry,
+                                        classEntryByClassName = classEntryByClassName,
+                                    ),
+                                    candidateBeans = unrealizedKeys,
+                                )
+                            }
+                        }
                     }
                 }
 
                 BeanKind.FACTORY_METHOD -> {
                     val returnEntry = classEntryByClassName[bean.exposedType]
                     if (returnEntry?.isInterface == true) {
+                        // 织入开启时降级为 INFO：实际返回的具体实现若在当前模块编译产物内会被织入，
+                        // 仅当实现来自依赖 jar 时才真正失效，故保留提示但不阻断构建。
+                        val severity = if (weaving) DiagnosticSeverity.INFO else DiagnosticSeverity.WARNING
+                        val weaveHint = if (weaving) {
+                            "（已开启织入：若实际返回的具体实现属于当前模块编译产物将被编译期织入，此处仅作提示。）"
+                        } else {
+                            "请把返回类型改为具体实现类。"
+                        }
                         diagnostics += diagnostic(
-                            severity = DiagnosticSeverity.WARNING,
+                            severity = severity,
                             rule = "aop-factory-bean-interface-return",
                             ownerClassName = bean.ownerClassName,
                             declarationName = bean.declarationName,
                             sourceFile = bean.sourceFile,
                             message = "@Bean 方法 ${bean.declarationName} 声明的返回类型 ${bean.exposedType} 是接口，" +
                                 "且有 ${matched.size} 个切面通知命中，但运行时按声明类型收集接口必为空，代理永不生效。" +
-                                "请把返回类型改为具体实现类。",
+                                weaveHint,
                             candidateBeans = matched.map { "${it.aspectClassName}#${it.advice.methodName}" },
                         )
                     }
@@ -1242,17 +1468,56 @@ internal object StaticDiagnosisEngine {
         bean: BeanDefinition,
         classEntryByClassName: Map<String, ClassIndexEntry>,
     ): Boolean {
-        if (!pointcutClassMatches(advice.classPattern, bean.exposedType)) {
-            return false
+        val entry = classEntryByClassName[bean.exposedType]
+        if (pointcutClassMatches(advice.classPattern, bean.exposedType)) {
+            if (advice.methodPattern == "*") {
+                return true
+            }
+            return entry != null &&
+                hierarchyHasMethod(entry, advice.methodPattern, classEntryByClassName, privateOnly = false)
         }
+        // 切点写的是**父类型**、Bean 是子类的情形：`S extends Base` 且不覆写 `save()` 时，
+        // 切在 `Base.save` 上的转发体会被 S 的实例分派到，但 S 自身没有可织入的声明方法 ——
+        // 计划里要么没有 S、要么 SKIPPED。原先这里直接返回 false，S 连 `matched` 都进不去，
+        // 后面 unrealized/realized 那套判定一步都走不到，全程静默。按保守方向（宁可多报）纳入。
+        // 只认「声明在父类型且**未被本类覆写**」的方法：本类覆写了的话那个覆写体会被正常织入，
+        // 报出来就是假阳性。
+        val matchedSuper = hierarchyMatchSuperType(entry ?: return false, advice.classPattern, classEntryByClassName)
+            ?: return false
         if (advice.methodPattern == "*") {
             return true
         }
-        val entry = classEntryByClassName[bean.exposedType] ?: return false
-        return hierarchyHasMethod(entry, advice.methodPattern, classEntryByClassName, privateOnly = false)
+        if (!hierarchyHasMethod(matchedSuper, advice.methodPattern, classEntryByClassName, privateOnly = false)) {
+            return false
+        }
+        return entry.methods.none { it.name == advice.methodPattern && !it.isPrivate }
     }
 
-    /** 沿父类链查找方法；privateOnly=true 时只认 private（用于 private 切点判定） */
+    /** 沿父类链找到第一个类名命中切点类模式的祖先条目；找不到返回 null（只走 superClassName，与 hierarchyHasMethod 同口径）。 */
+    private fun hierarchyMatchSuperType(
+        entry: ClassIndexEntry,
+        classPattern: String,
+        classEntryByClassName: Map<String, ClassIndexEntry>,
+    ): ClassIndexEntry? {
+        var current = entry.superClassName?.let { classEntryByClassName[it] }
+        val visited = mutableSetOf<String>()
+        while (current != null && visited.add(current.className)) {
+            if (pointcutClassMatches(classPattern, current.className)) {
+                return current
+            }
+            current = current.superClassName?.let { classEntryByClassName[it] }
+        }
+        return null
+    }
+
+    /**
+     * 沿父类链查找方法；privateOnly=true 时只认 private（用于 private 切点判定）。
+     *
+     * **F3 已知口径（本次不收紧，仅加注）**：非 private 分支用 `!isPrivate` 近似「public」，
+     * 因此 protected / 包内方法的切点也会被当作「命中」。这是 pre-existing 行为，属
+     * `pointcut-target-not-found` / `aop-private-method-pointcut` 的既有语义，与本次「抑制来源」
+     * 改造无关——**本次不改动其行为**（后续任务 `aop-nonpublic-method-pointcut` 再收紧，见 §8 R19）。
+     */
     private fun hierarchyHasMethod(
         entry: ClassIndexEntry,
         methodName: String,
@@ -1312,7 +1577,13 @@ internal object StaticDiagnosisEngine {
         return false
     }
 
-    /** 复刻 AopProxyFactory.collectInterfaces：收集类型自身及父类链上的全部接口 */
+    /**
+     * 复刻 AopProxyFactory.collectInterfaces：收集类型自身及父类链上的全部接口。
+     *
+     * **诊断残渣免疫契约（§2.3.7 / §7）**：必须**剔除**织入器自己加上的标记接口
+     * （`WovenTarget` / `InjectionWovenTarget`）。这些接口不属于业务类型；若不过滤，
+     * 任何「按接口判定」的规则都会随「字节码是否已被就地织入」而漂移 → 结论不可复现。
+     */
     private fun collectExposedInterfaces(
         bean: BeanDefinition,
         classEntryByClassName: Map<String, ClassIndexEntry>,
@@ -1321,10 +1592,78 @@ internal object StaticDiagnosisEngine {
         var current: ClassIndexEntry? = classEntryByClassName[bean.exposedType]
         val visited = mutableSetOf<String>()
         while (current != null && visited.add(current.className)) {
-            interfaces.addAll(current.interfaceNames)
+            interfaces.addAll(current.interfaceNames.filterNot { it in WEAVING_MARKER_INTERFACES })
             current = current.superClassName?.let { classEntryByClassName[it] }
         }
         return interfaces.toList()
+    }
+
+    /**
+     * `weaving=true` 且 `unrealized` 非空时的精确 message（§2.3.5）：模板 + 原因（按优先级判定）。
+     *
+     * 原因优先级：① 计划标注 `NO_ASPECT_CLASS`（类/方法带 `@NoAspect`）；
+     * ② 某未生效通知的方法模式名在**该类自身**未声明、但在**父类链**中存在（继承未覆写）；
+     * ③ 兜底：命中的方法不具备织入资格。
+     */
+    private fun buildUnrealizedMessage(
+        bean: BeanDefinition,
+        totalMatched: Int,
+        unrealizedKeys: List<String>,
+        unrealizedAdvices: List<ResolvedAdvice>,
+        planEntry: ClassWeaveDecision?,
+        classEntryByClassName: Map<String, ClassIndexEntry>,
+    ): String {
+        val className = bean.exposedType
+        val reason = when {
+            planEntry?.skipReason == WeaveSkipReason.NO_ASPECT_CLASS ->
+                "该类标注了 @NoAspect，引擎在织入阶段显式跳过该类。若确需该通知生效，请移除 @NoAspect。"
+
+            else -> {
+                val inherited = classEntryByClassName[className]?.let { entry ->
+                    findInheritedNotOverridden(entry, unrealizedAdvices, classEntryByClassName)
+                }
+                if (inherited != null) {
+                    "切点命中的方法 ${inherited.first} 声明在父类 ${inherited.second} 而未在 $className 中声明/覆写；" +
+                        "引擎只按被织类【自身声明】的方法名匹配，故不会织入。" +
+                        "在 $className 中覆写它即可被织入。" +
+                        "注意：把切点类模式改成 ${inherited.second} 并不能消除本条告警 —— 父类被织入的" +
+                        "转发体仍会被 $className 的实例分派到，而是否命中通知取决于运行期匹配口径，" +
+                        "构建期无法判定，因此这里按保守方向保留提示。"
+                } else {
+                    "命中的方法不具备织入资格（须为 public 且非 static/abstract/native/合成/桥接，且位于本模块编译产物内）。"
+                }
+            }
+        }
+        return "有 $totalMatched 个切面通知命中 Bean $className，" +
+            "但该类没有实现任何接口，运行时 JDK 动态代理将跳过包装；" +
+            "本次编译期织入亦未能接管其中 ${unrealizedKeys.size} 个通知（${unrealizedKeys.joinToString(", ")}），" +
+            "这些通知将永不执行。原因：$reason"
+    }
+
+    /**
+     * §2.3.5 原因 2：某未生效通知的方法模式名，在**该类自身**未声明、但在**父类链**中存在。
+     *
+     * 返回 `(方法名, 声明它的父类 FQCN)`；不存在则返回 `null`。
+     */
+    private fun findInheritedNotOverridden(
+        entry: ClassIndexEntry,
+        unrealizedAdvices: List<ResolvedAdvice>,
+        classEntryByClassName: Map<String, ClassIndexEntry>,
+    ): Pair<String, String>? {
+        unrealizedAdvices.forEach { advice ->
+            val methodPattern = advice.methodPattern
+            if (methodPattern == "*") return@forEach
+            if (entry.methods.any { it.name == methodPattern }) return@forEach
+            var current = entry.superClassName?.let { classEntryByClassName[it] }
+            val visited = mutableSetOf<String>()
+            while (current != null && visited.add(current.className)) {
+                if (current.methods.any { it.name == methodPattern }) {
+                    return methodPattern to current.className
+                }
+                current = current.superClassName?.let { classEntryByClassName[it] }
+            }
+        }
+        return null
     }
 
     private fun diagnostic(
@@ -1352,6 +1691,18 @@ internal object StaticDiagnosisEngine {
             candidateBeans = candidateBeans.distinct().sorted(),
         )
     }
+
+    /**
+     * `weaving=true` 但**未产出可用织入计划**时，追加到 `aop-target-not-proxied` 基线 message 后的后缀。
+     *
+     * 这是**异常**分支（插件在 `weaving=true` 时会把 `planTaboolibIocAop` 置为 enabled，正常情况下计划必然存在）：
+     * 提示用户「织入链路没跑通」而非「切点写法问题」。**仅** `weaving=true` 时追加，
+     * `weaving=false` 的 message 保持与 HEAD 逐字一致（引导只进 message，不进 `buildSolution`）。
+     */
+    private const val WEAVE_PLAN_MISSING_SUFFIX: String =
+        " 已开启编译期织入，但本次未产出可用的织入计划（aop-weave-plan.json），" +
+            "该 Bean 命中的通知不会被编译期织入接管；请检查 planTaboolibIocAop 任务是否执行、" +
+            "build/taboolib-ioc/aop-weave-plan.json 是否已生成且可解析。"
 
     private val RESOURCE_TYPES = setOf(
         "java.sql.Connection",

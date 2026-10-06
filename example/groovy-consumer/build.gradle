@@ -43,7 +43,7 @@ taboolibIoc {
     // IoC 依赖版本：当未显式指定 dependencyNotation 时，会用于推导默认坐标版本。
     iocVersion = '1.2.0-SNAPSHOT'
 
-    // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 com.example.groovy.ioc。
+    // relocate 目标包根：最终会把 top.wcpe.taboolib.ioc 重定位到 top.wcpe.mc.plugin.taboolib.ioc.example.ioc。
     targetPackage = 'top.wcpe.mc.plugin.taboolib.ioc.example'
 
     // 静态诊断发现 error 时直接拦截构建。

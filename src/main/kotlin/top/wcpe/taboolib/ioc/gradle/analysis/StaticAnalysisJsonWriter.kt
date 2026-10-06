@@ -17,6 +17,9 @@ internal object StaticAnalysisJsonWriter {
             "injectionPointCount" to injectionPointIndex.size,
             "errorCount" to diagnostics.count { it.severity == DiagnosticSeverity.ERROR },
             "warningCount" to diagnostics.count { it.severity == DiagnosticSeverity.WARNING },
+            // 抑制与降级随报告落盘：报告里少了某条诊断时，这两项能说明原因，不必再靠猜。
+            "sourceIndexDegradations" to sourceIndexDegradations,
+            "suppressedMissingInjections" to suppressedMissingInjections,
             "beanIndex" to beanIndex.map { bean ->
                 linkedMapOf(
                     "ownerClassName" to bean.ownerClassName,

@@ -114,6 +114,9 @@ gradle-app.setting
 # Common working directory
 run/
 
+# 过程性临时文件（AI 助理与本地调试产物），一律不入库
+.tmp/
+
 # Avoid ignoring Gradle wrapper jar file (.jar files are usually ignored)
 !gradle-wrapper.jar
 

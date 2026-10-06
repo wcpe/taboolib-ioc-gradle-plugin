@@ -1,5 +1,7 @@
 package top.wcpe.taboolib.ioc.gradle.analysis
 
+import org.objectweb.asm.Opcodes
+
 internal enum class BeanKind {
     CLASS,
     FACTORY_METHOD,
@@ -35,12 +37,26 @@ internal data class FieldInfo(
     val descriptor: String,
 )
 
-/** 类上采集到的方法（不含构造器与合成方法），供 AOP 静默失效规则组做方法级匹配 */
+/**
+ * 类上采集到的方法（不含构造器与合成方法），供 AOP 静默失效规则组做方法级匹配。
+ *
+ * 携带**完整访问位** `access`（而非 `isPrivate`/`isStatic` 这类布尔近似），
+ * 以便织入资格判定能逐位对齐 `AopWeaver.isWeavable`（`ACC_PUBLIC`/`ACC_STATIC`/
+ * `ACC_ABSTRACT`/`ACC_NATIVE`/`ACC_SYNTHETIC`/`ACC_BRIDGE`）。
+ * 注意：本 data class 不给 `access` 默认值，强制所有构造点显式提供真实访问位，
+ * 避免新增构造点静默漏填导致织入资格误判。
+ */
 internal data class CollectedMethodInfo(
     val name: String,
-    val isPrivate: Boolean,
-    val isStatic: Boolean,
-)
+    /** JVM 方法访问位（`org.objectweb.asm.Opcodes.ACC_*` 的按位或）。 */
+    val access: Int,
+) {
+    val isPrivate: Boolean
+        get() = access and Opcodes.ACC_PRIVATE != 0
+
+    val isStatic: Boolean
+        get() = access and Opcodes.ACC_STATIC != 0
+}
 
 internal data class LifecycleMethodsInfo(
     val postConstructMethods: List<String> = emptyList(),
@@ -226,6 +242,10 @@ internal data class BytecodeAnalysisIndex(
     val componentScans: List<ComponentScanDefinition>,
     val aspectIndex: List<AspectDefinition> = emptyList(),
     val valueFieldIndex: List<ValueFieldDefinition> = emptyList(),
+    /** 源码索引的降级说明（同名类型冲突裁决、花括号不配平等），用于解释「报告为什么变了」。 */
+    val sourceIndexDegradations: List<String> = emptyList(),
+    /** 被「已有初值 / 已手工装配」判定抑制掉的 missing-inject 候选；抑制是漏报的唯一出口，必须留痕。 */
+    val suppressedMissingInjections: List<String> = emptyList(),
 )
 
 internal data class StaticAnalysisReport(
@@ -235,4 +255,8 @@ internal data class StaticAnalysisReport(
     val componentScans: List<ComponentScanDefinition>,
     val typeAliasIndex: List<TypeAliasDefinition>,
     val diagnostics: List<StaticDiagnostic>,
+    /** 与 [BytecodeAnalysisIndex.sourceIndexDegradations] 对应，随报告落盘以便事后追溯。 */
+    val sourceIndexDegradations: List<String> = emptyList(),
+    /** 与 [BytecodeAnalysisIndex.suppressedMissingInjections] 对应，随报告落盘以便事后追溯。 */
+    val suppressedMissingInjections: List<String> = emptyList(),
 )

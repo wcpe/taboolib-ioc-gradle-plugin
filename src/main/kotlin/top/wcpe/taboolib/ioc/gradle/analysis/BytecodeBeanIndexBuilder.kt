@@ -1,5 +1,6 @@
 package top.wcpe.taboolib.ioc.gradle.analysis
 
+import java.lang.reflect.ParameterizedType
 import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
@@ -125,6 +126,9 @@ internal object BytecodeBeanIndexBuilder {
 
     private fun enrichSourceLocations(index: BytecodeAnalysisIndex, sourceDirectories: Iterable<Path>): BytecodeAnalysisIndex {
         val sourceLocationIndex = SourceLocationIndexBuilder.build(sourceDirectories)
+        // 抑制与降级都要留痕。抑制是漏报的唯一出口：候选被丢弃后，报告里连痕迹都没有，
+        // 「某条 missing-inject-annotation 为什么没出现」将完全无法复现。
+        val suppressed = mutableListOf<String>()
         return index.copy(
             injectionPointIndex = index.injectionPointIndex.map { injection ->
                 val location = sourceLocationIndex.resolve(injection)
@@ -138,6 +142,9 @@ internal object BytecodeBeanIndexBuilder {
                 val fieldAnalysis = sourceLocationIndex.analyzeField(candidate)
                 if (fieldAnalysis != null) {
                     if (fieldAnalysis.hasInitializer || fieldAnalysis.hasManualAssignment) {
+                        val reason = if (fieldAnalysis.hasInitializer) "已有初值" else "已手工装配"
+                        suppressed += "${candidate.ownerClassName}.${candidate.declarationName}" +
+                            "（$reason，${fieldAnalysis.location.sourcePath}:${fieldAnalysis.location.sourceLine}）"
                         return@mapNotNull null
                     }
                     return@mapNotNull candidate.copy(
@@ -153,6 +160,8 @@ internal object BytecodeBeanIndexBuilder {
                     sourceColumn = location?.sourceColumn,
                 )
             },
+            sourceIndexDegradations = sourceLocationIndex.degradationNotes,
+            suppressedMissingInjections = suppressed,
         )
     }
 
@@ -324,17 +333,63 @@ internal object BytecodeBeanIndexBuilder {
         }
     }
 
-    private fun collectGenericSuperTypes(clazz: Class<*>): List<String> {
-        return buildList {
-            clazz.genericSuperclass
-                ?.typeName
-                ?.takeUnless { it == "java.lang.Object" }
-                ?.let { add(normalizeTypeName(it)) }
-            clazz.genericInterfaces
-                .map { normalizeTypeName(it.typeName) }
-                .forEach(::add)
-        }.distinct().sorted()
+    /** 继承链遍历的深度上限：防病态或环状的泛型签名让闭包走不完。 */
+    private const val GENERIC_HIERARCHY_LIMIT = 64
+
+    private const val OBJECT_TYPE_NAME = "java.lang.Object"
+
+    /**
+     * 沿继承链收集**全部**泛型父类型，并把每一层的类型实参逐层代入。
+     *
+     * 只取 `genericSuperclass` / `genericInterfaces` 是不够的 —— Java 只返回**直接**父类型：
+     * `class C extends BasePort<String>` 而 `BasePort<T> implements Port<T>` 时，与注入点比对的
+     * 那一项 `Port<String>` 在任何一层的直接父类型里都不出现，合法候选因此被判「泛型实参不一致」
+     * 而踢出，报出阻断构建的假阳性 `missing-bean`。
+     */
+    internal fun collectGenericSuperTypes(clazz: Class<*>): List<String> {
+        val result = linkedSetOf<String>()
+        val pending = ArrayDeque<Pair<Class<*>, Map<String, String>>>()
+        pending += clazz to emptyMap()
+        val visited = mutableSetOf<Class<*>>()
+        while (pending.isNotEmpty() && visited.size <= GENERIC_HIERARCHY_LIMIT) {
+            val (current, substitutions) = pending.removeFirst()
+            if (!visited.add(current)) continue
+            (listOfNotNull(current.genericSuperclass) + current.genericInterfaces).forEach { parent ->
+                val boundName = substituteTypeVariables(parent.typeName, substitutions)
+                if (boundName != OBJECT_TYPE_NAME) result += normalizeTypeName(boundName)
+                val rawParent = rawClassOf(parent) ?: return@forEach
+                pending += rawParent to bindTypeVariables(parent, substitutions)
+            }
+        }
+        return result.sorted()
     }
+
+    private fun rawClassOf(type: java.lang.reflect.Type): Class<*>? = when (type) {
+        is Class<*> -> type
+        is ParameterizedType -> type.rawType as? Class<*>
+        else -> null
+    }
+
+    /** 把父类型的形参绑定到它被实例化时的实参，供再上一层代入使用。 */
+    private fun bindTypeVariables(
+        parent: java.lang.reflect.Type,
+        substitutions: Map<String, String>,
+    ): Map<String, String> {
+        if (parent !is ParameterizedType) return emptyMap()
+        val raw = parent.rawType as? Class<*> ?: return emptyMap()
+        val parameters = raw.typeParameters
+        val arguments = parent.actualTypeArguments
+        if (parameters.size != arguments.size) return emptyMap()
+        return parameters.mapIndexed { index, parameter ->
+            parameter.name to substituteTypeVariables(arguments[index].typeName, substitutions)
+        }.toMap()
+    }
+
+    /** 按**整词**替换类型变量：`Port<T>` 代入 `T -> java.lang.String` 得 `Port<java.lang.String>`。 */
+    private fun substituteTypeVariables(text: String, substitutions: Map<String, String>): String =
+        substitutions.entries.fold(text) { acc, (name, value) ->
+            Regex("""\b""" + Regex.escape(name) + """\b""").replace(acc, value)
+        }
 
     private fun enrichBeanDefinition(bean: BeanDefinition, classLoader: ClassLoader): BeanDefinition {
         if (bean.kind != BeanKind.FACTORY_METHOD) {
@@ -352,6 +407,11 @@ internal object BytecodeBeanIndexBuilder {
 
     private fun enrichInjectionPoint(injection: InjectionPointDefinition, classLoader: ClassLoader): InjectionPointDefinition {
         val ownerClass = loadClass(injection.ownerClassName, classLoader) ?: return injection
+        // 数组参数的形态在两侧不同：反射 Class.getName() 是 `[Lcom.example.Port;`，
+        // ASM 的 Type.getType(descriptor).className 是 `com.example.Port[]`。
+        // 直接比字符串会让数组参数永远匹配不到构造器/方法，dependencyGenericType 静默保持 null，
+        // 泛型校验被跳过；这里统一规范化到 ASM 口径后再比较。
+        val expectedDependencyType = asmTypeName(injection.dependencyType)
         val genericType = safelyResolveMetadata<String?>(null) {
             when (injection.kind) {
                 InjectionPointKind.FIELD -> ownerClass.declaredFields.firstOrNull {
@@ -360,18 +420,34 @@ internal object BytecodeBeanIndexBuilder {
 
                 InjectionPointKind.CONSTRUCTOR_PARAMETER -> ownerClass.declaredConstructors.firstOrNull { constructor ->
                     val parameterIndex = injection.parameterIndex ?: return@firstOrNull false
-                    parameterIndex in constructor.parameterTypes.indices && constructor.parameterTypes[parameterIndex].name == injection.dependencyType
+                    parameterIndex in constructor.parameterTypes.indices &&
+                        asmTypeName(constructor.parameterTypes[parameterIndex]) == expectedDependencyType
                 }?.genericParameterTypes?.getOrNull(injection.parameterIndex ?: -1)?.typeName
 
                 InjectionPointKind.METHOD_PARAMETER -> ownerClass.declaredMethods.firstOrNull { method ->
                     val parameterIndex = injection.parameterIndex ?: return@firstOrNull false
                     method.name == injection.declarationName &&
                         parameterIndex in method.parameterTypes.indices &&
-                        method.parameterTypes[parameterIndex].name == injection.dependencyType
+                        asmTypeName(method.parameterTypes[parameterIndex]) == expectedDependencyType
                 }?.genericParameterTypes?.getOrNull(injection.parameterIndex ?: -1)?.typeName
             }
         }
         return injection.copy(dependencyGenericType = genericType?.let(::normalizeTypeName))
+    }
+
+    /** 把反射 `Class.getName()` 的数组形态（`[Lcom.example.Port;`）折算为 ASM 的 `com.example.Port[]` 口径 */
+    private fun asmTypeName(clazz: Class<*>): String = Type.getType(clazz).className
+
+    /**
+     * 同上，但输入是类型串：非数组形态原样返回，避免误改普通类名。
+     * 非法数组描述符（源侧改写等异常输入）回退为原串，只让比较失败，不引入新的抛错路径。
+     */
+    private fun asmTypeName(typeName: String): String {
+        val trimmed = typeName.trim()
+        if (!trimmed.startsWith("[")) {
+            return trimmed
+        }
+        return runCatching { Type.getType(trimmed).className }.getOrDefault(trimmed)
     }
 
     private fun <T> safelyResolveMetadata(defaultValue: T, block: () -> T): T {
@@ -1041,8 +1117,7 @@ internal object BytecodeBeanIndexBuilder {
             return methods.filter { it.name != "<init>" }.map { method ->
                 CollectedMethodInfo(
                     name = method.name,
-                    isPrivate = method.isPrivate,
-                    isStatic = method.isStaticMethod,
+                    access = method.access,
                 )
             }
         }
