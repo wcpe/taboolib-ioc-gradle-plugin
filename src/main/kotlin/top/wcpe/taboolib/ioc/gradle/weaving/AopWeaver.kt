@@ -54,7 +54,6 @@ internal object AopWeaver {
     /** 与运行期 `AopWeavingRuntime.ORIGINAL_SUFFIX` 必须完全一致。 */
     const val ORIGINAL_SUFFIX: String = "\$ioc\$original"
 
-    private const val WOVEN_TARGET_INTERNAL = "top/wcpe/taboolib/ioc/aop/WovenTarget"
     private const val RUNTIME_INTERNAL = "top/wcpe/taboolib/ioc/aop/AopWeavingRuntime"
     private const val INVOKE_DESC =
         "(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;"
@@ -63,47 +62,169 @@ internal object AopWeaver {
     /** 织入结果：字节码（null = 无需改动）与织入的方法数。 */
     data class Outcome(val bytes: ByteArray?, val wovenMethods: Int)
 
-    fun weave(classBytes: ByteArray, advices: List<ResolvedAdvice>): Outcome {
+    /**
+     * **唯一决策函数**（无副作用，不写回字节码）：给定字节码与通知，判定该类是否会织入、织入哪些方法。
+     *
+     * `weave()` 必须**先调用它**、再按 `outcome == WOVEN` 机械落地（`weave = plan + apply`）。
+     * 这样「计划列了什么」与「实际织入了什么」由**同一个函数**保证一致，而不是靠两份逻辑 + 测试兜底。
+     *
+     * @return 与 AOP 相关的类的决策；`null` 表示该类**与 AOP 无关**（未被任何通知的类模式命中、
+     *   非类级 `@NoAspect`、非残渣），不登记进计划（使报告规模与「切点目标数」同阶）。
+     */
+    fun plan(classBytes: ByteArray, advices: List<ResolvedAdvice>): ClassWeaveDecision? {
         val node = ClassNode()
         ClassReader(classBytes).accept(node, ClassReader.EXPAND_FRAMES)
-
-        if ((node.access and Opcodes.ACC_INTERFACE) != 0) return Outcome(null, 0)
-        if (node.interfaces?.contains(WOVEN_TARGET_INTERNAL) == true) return Outcome(null, 0)
-        if (hasNoAspect(node.visibleAnnotations) || hasNoAspect(node.invisibleAnnotations)) return Outcome(null, 0)
-        if (node.name.endsWith("module-info") || node.name.endsWith("package-info")) return Outcome(null, 0)
-
         val className = node.name.replace('/', '.')
-        val candidates = node.methods.filter { isWeavable(it) }
-        val woven = ArrayList<MethodNode>(4)
-        for (method in candidates) {
-            if (hasNoAspect(method.visibleAnnotations) || hasNoAspect(method.invisibleAnnotations)) continue
-            if (advices.none { it.matches(className, method.name) }) continue
-            woven.add(method)
-        }
-        if (woven.isEmpty()) return Outcome(null, 0)
 
-        woven.forEach { splitAndForward(node, it) }
+        // 残渣（上一轮就地织入留下的字节）：类已实现 WovenTarget，或存在 *$ioc$original 合成方法。
+        // 语义是「该类确已被织入」→ outcome=WOVEN + alreadyWoven=true（**绝不是 SKIPPED**）。
+        // 判据必须是 endsWith：织入器产出的名字是 `<原名><后缀>`。用 contains 的话，用户随手写一个
+        // 名字里含该子串的方法（`fun handle$ioc$originalExtra()`）就会让整类被判为残渣、
+        // 此后永久跳过织入，且计划记成「已织入」、诊断据此抑制告警 —— 通知不执行且毫无提示。
+        val hasWovenMarker = node.interfaces?.contains(WEAVE_TARGET_INTERNAL) == true
+        val hasOriginalMethod = node.methods.any { it.name.endsWith(ORIGINAL_SUFFIX) }
+        if (hasWovenMarker || hasOriginalMethod) {
+            return ClassWeaveDecision(
+                className = className,
+                outcome = WeaveOutcome.WOVEN,
+                alreadyWoven = true,
+                skipReason = null,
+                wovenMethods = residueWovenMethods(node, advices, className),
+            )
+        }
+
+        // 切面类自身不参与织入：通配切点的 classPattern 是 `*`，切面自己的通知方法同样满足资格
+        // 判据。织入后运行期反射调用通知会落在转发体上、再次进入 invoke 并按当前注册表匹配到同一个
+        // 通知，通知体被多套一层；实现里再反射调用通知方法就是自递归。诊断侧本就显式跳过切面 Bean
+        // （「切面 Bean 自身不被代理」），这里对齐同一口径。
+        // 放在残渣判定**之后**：已经织入过的类仍应如实记为 WOVEN，而不是被改判成 SKIPPED。
+        // 切面清单直接由 advices 自带的 aspectClassName 推出，与计划侧同源，无需另加签名参数。
+        if (className in advices.map { it.aspectClassName }.toSet()) {
+            return ClassWeaveDecision(
+                className = className,
+                outcome = WeaveOutcome.SKIPPED,
+                skipReason = WeaveSkipReason.ASPECT_CLASS,
+            )
+        }
+
+        if (node.name.endsWith("module-info") || node.name.endsWith("package-info")) {
+            return ClassWeaveDecision(
+                className = className,
+                outcome = WeaveOutcome.SKIPPED,
+                skipReason = WeaveSkipReason.MODULE_INFO,
+            )
+        }
+
+        val classNoAspect = hasNoAspect(node.visibleAnnotations) || hasNoAspect(node.invisibleAnnotations)
+        val matchedByClassPattern = advices.any { it.matchesClass(className) }
+        if (!classNoAspect && !matchedByClassPattern) {
+            return null // 与 AOP 无关的普通类：不登记
+        }
+
+        if ((node.access and Opcodes.ACC_INTERFACE) != 0) {
+            return ClassWeaveDecision(
+                className = className,
+                outcome = WeaveOutcome.SKIPPED,
+                skipReason = WeaveSkipReason.INTERFACE,
+            )
+        }
+        if (classNoAspect) {
+            return ClassWeaveDecision(
+                className = className,
+                outcome = WeaveOutcome.SKIPPED,
+                skipReason = WeaveSkipReason.NO_ASPECT_CLASS,
+            )
+        }
+
+        val eligible = node.methods.filter { isWeavable(it) }
+        val woven = eligible.filter { method ->
+            !hasNoAspect(method.visibleAnnotations) &&
+                !hasNoAspect(method.invisibleAnnotations) &&
+                advices.any { it.matches(className, method.name) }
+        }
+        if (woven.isEmpty()) {
+            // 方法级 @NoAspect 把唯一匹配的方法排除掉时，归因到 @NoAspect（否则归因到「无可织入方法」）。
+            val noAspectExcluded = eligible.any { method ->
+                (hasNoAspect(method.visibleAnnotations) || hasNoAspect(method.invisibleAnnotations)) &&
+                    advices.any { it.matches(className, method.name) }
+            }
+            return ClassWeaveDecision(
+                className = className,
+                outcome = WeaveOutcome.SKIPPED,
+                skipReason = if (noAspectExcluded) {
+                    WeaveSkipReason.NO_ASPECT_CLASS
+                } else {
+                    WeaveSkipReason.NO_ELIGIBLE_MATCHING_METHOD
+                },
+            )
+        }
+        return ClassWeaveDecision(
+            className = className,
+            outcome = WeaveOutcome.WOVEN,
+            alreadyWoven = false,
+            skipReason = null,
+            wovenMethods = woven.map { method ->
+                WovenMethod(
+                    methodName = method.name,
+                    descriptor = method.desc,
+                    matchedAdvices = matchedAdviceKeys(advices, className, method.name),
+                )
+            },
+        )
+    }
+
+    /**
+     * `weave = plan + apply`：先取 [plan] 的决策，**仅当** `outcome == WOVEN` 且非残渣时按该决策机械落地。
+     * 本函数**不得**自带第二套 `isWeavable` / `matches` / `@NoAspect` 判断。
+     */
+    fun weave(classBytes: ByteArray, advices: List<ResolvedAdvice>): Outcome {
+        val decision = plan(classBytes, advices) ?: return Outcome(null, 0)
+        if (decision.outcome != WeaveOutcome.WOVEN || decision.alreadyWoven) return Outcome(null, 0)
+        if (decision.wovenMethods.isEmpty()) return Outcome(null, 0)
+
+        val node = ClassNode()
+        ClassReader(classBytes).accept(node, ClassReader.EXPAND_FRAMES)
+        val targets = decision.wovenMethods.mapNotNull { woven ->
+            node.methods.firstOrNull { it.name == woven.methodName && it.desc == woven.descriptor }
+        }
+        if (targets.isEmpty()) return Outcome(null, 0)
+
+        targets.forEach { splitAndForward(node, it) }
         if (node.interfaces == null) node.interfaces = mutableListOf()
-        if (!node.interfaces.contains(WOVEN_TARGET_INTERNAL)) node.interfaces.add(WOVEN_TARGET_INTERNAL)
+        if (!node.interfaces.contains(WEAVE_TARGET_INTERNAL)) node.interfaces.add(WEAVE_TARGET_INTERNAL)
 
         val writer = ClassWriter(ClassWriter.COMPUTE_MAXS)
         node.accept(writer)
-        return Outcome(writer.toByteArray(), woven.size)
+        return Outcome(writer.toByteArray(), targets.size)
     }
+
+    /** 计划键：`<切面FQCN>#<通知方法名>`（与诊断侧 `expected` 的构造逐字一致）。 */
+    private fun matchedAdviceKeys(advices: List<ResolvedAdvice>, className: String, methodName: String): List<String> =
+        advices.filter { it.matches(className, methodName) }
+            .map { "${it.aspectClassName}#${it.adviceMethodName}" }
+
+    /** 从残渣字节重建 `wovenMethods`：扫描 `*$ioc$original` 合成方法，用同一 matcher 重匹配通知键。 */
+    private fun residueWovenMethods(
+        node: ClassNode,
+        advices: List<ResolvedAdvice>,
+        className: String,
+    ): List<WovenMethod> =
+        node.methods
+            .filter { it.name.endsWith(ORIGINAL_SUFFIX) }
+            .map { method ->
+                val originalName = method.name.removeSuffix(ORIGINAL_SUFFIX)
+                WovenMethod(
+                    methodName = originalName,
+                    descriptor = method.desc,
+                    matchedAdvices = matchedAdviceKeys(advices, className, originalName)
+                        .ifEmpty { listOf(ALREADY_WOVEN_SENTINEL) },
+                )
+            }
 
     private fun hasNoAspect(annotations: List<org.objectweb.asm.tree.AnnotationNode>?): Boolean =
         annotations?.any { it.desc == AopWeavePlanner.NO_ASPECT_DESCRIPTOR } == true
 
-    private fun isWeavable(method: MethodNode): Boolean {
-        if ((method.access and Opcodes.ACC_PUBLIC) == 0) return false
-        if ((method.access and Opcodes.ACC_STATIC) != 0) return false
-        if ((method.access and Opcodes.ACC_ABSTRACT) != 0) return false
-        if ((method.access and Opcodes.ACC_NATIVE) != 0) return false
-        if ((method.access and (Opcodes.ACC_SYNTHETIC or Opcodes.ACC_BRIDGE)) != 0) return false
-        if (method.name.startsWith("<") || method.name.startsWith("access$")) return false
-        if (method.name.contains(ORIGINAL_SUFFIX)) return false
-        return true
-    }
+    private fun isWeavable(method: MethodNode): Boolean = WeavingEligibility.isEligible(method)
 
     /** 把原方法体搬到合成方法，并让原方法转为调用运行期入口。 */
     private fun splitAndForward(owner: ClassNode, method: MethodNode) {
